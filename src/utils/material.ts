@@ -1,5 +1,5 @@
 import type { PatternScheme, MaterialSummary } from '../types'
-import { checkSingleScheme } from './checker'
+import { checkSingleScheme, getSchemeReadiness } from './checker'
 
 export function generateMaterialSummary(schemes: PatternScheme[]): {
   mainColors: MaterialSummary[]
@@ -13,21 +13,25 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
 } {
   const finalizedSchemes = schemes.filter(s => {
     if (s.status !== '已定稿') return false
-    const checks = checkSingleScheme(s)
-    const hasErrors = checks.some(c => c.type === 'error')
-    return !hasErrors
+    const readiness = getSchemeReadiness(s)
+    return readiness.isReadyForFinal
   })
 
   const excludedSchemes = schemes
     .filter(s => s.status === '已定稿')
-    .map(s => ({
-      scheme: s,
-      checks: checkSingleScheme(s).filter(c => c.type === 'error')
-    }))
-    .filter(item => item.checks.length > 0)
+    .map(s => {
+      const readiness = getSchemeReadiness(s)
+      const reasons: string[] = []
+      if (readiness.blockingReasons.length > 0) reasons.push(...readiness.blockingReasons)
+      if (readiness.hasMissingInfo) reasons.push('存在缺失的必填信息')
+      if (readiness.hasDurationOverflow) reasons.push(`预计时长 ${s.durationHours}h 超出建议上限`)
+      if (readiness.hasColorConflict) reasons.push('主辅色对比度较低，可能影响视觉层次')
+      return { scheme: s, reasons }
+    })
+    .filter(item => item.reasons.length > 0)
     .map(item => ({
       name: item.scheme.name,
-      reasons: item.checks.map(c => c.message)
+      reasons: item.reasons
     }))
 
   const mainColorMap = new Map<string, { count: number; boxTypes: Set<string> }>()

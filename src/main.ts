@@ -116,6 +116,31 @@ class App {
     return result
   }
 
+  private tryUpdateStatus(id: string, newStatus: SchemeStatus): boolean {
+    const scheme = this.schemes.find(s => s.id === id)
+    if (!scheme) return false
+
+    if (newStatus === '已定稿' && scheme.status !== '已定稿') {
+      const readiness = getSchemeReadiness(scheme)
+      if (!readiness.isReadyForFinal) {
+        const issues: string[] = []
+        if (readiness.blockingReasons.length > 0) issues.push(...readiness.blockingReasons)
+        if (readiness.hasMissingInfo) issues.push('存在缺失的必填信息')
+        if (readiness.hasDurationOverflow) issues.push(`预计时长 ${scheme.durationHours}h 超出建议上限`)
+        if (readiness.hasColorConflict) issues.push('主辅色对比度较低，可能影响视觉层次')
+
+        const confirmMsg = `该方案暂不满足定稿条件，存在以下问题：\n\n${issues.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}\n\n是否仍要强制标记为「已定稿」？`
+        
+        if (!confirm(confirmMsg)) {
+          return false
+        }
+      }
+    }
+
+    this.updateScheme(id, { status: newStatus })
+    return true
+  }
+
   private updateScheme(id: string, updates: Partial<PatternScheme>): void {
     const index = this.schemes.findIndex(s => s.id === id)
     if (index !== -1) {
@@ -200,7 +225,41 @@ class App {
       return
     }
 
-    if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
+    if (status === '已定稿') {
+      const notReadySchemes: { name: string; issues: string[] }[] = []
+      toUpdate.forEach(id => {
+        const scheme = this.schemes.find(s => s.id === id)
+        if (scheme && scheme.status !== '已定稿') {
+          const readiness = getSchemeReadiness(scheme)
+          if (!readiness.isReadyForFinal) {
+            const issues: string[] = []
+            if (readiness.blockingReasons.length > 0) issues.push(...readiness.blockingReasons)
+            if (readiness.hasMissingInfo) issues.push('存在缺失的必填信息')
+            if (readiness.hasDurationOverflow) issues.push(`预计时长 ${scheme.durationHours}h 超出建议上限`)
+            if (readiness.hasColorConflict) issues.push('主辅色对比度较低，可能影响视觉层次')
+            notReadySchemes.push({ name: scheme.name, issues })
+          }
+        }
+      })
+
+      if (notReadySchemes.length > 0) {
+        let confirmMsg = `以下 ${notReadySchemes.length} 个方案暂不满足定稿条件：\n\n`
+        notReadySchemes.slice(0, 5).forEach((item, idx) => {
+          confirmMsg += `${idx + 1}. 「${item.name}」\n`
+          confirmMsg += `   ${item.issues[0]}\n`
+        })
+        if (notReadySchemes.length > 5) {
+          confirmMsg += `... 还有 ${notReadySchemes.length - 5} 个方案存在问题\n`
+        }
+        confirmMsg += `\n是否仍要将全部 ${toUpdate.length} 个方案强制标记为「已定稿」？`
+        
+        if (!confirm(confirmMsg)) return
+      } else {
+        if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
+      }
+    } else {
+      if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
+    }
 
     const toUpdateSet = new Set(toUpdate)
     this.schemes = this.schemes.map(s => {
@@ -692,7 +751,8 @@ class App {
               const readiness = getSchemeReadiness(scheme)
               const errors = checks.filter(c => c.type === 'error').length
               const warnings = checks.filter(c => c.type === 'warning').length
-              const totalChecks = errors + warnings
+              const infos = checks.filter(c => c.type === 'info').length
+              const totalChecks = errors + warnings + infos
               const isPriority = isPriorityScheme(scheme)
               return `
                 <div class="wb-scheme-item ${this.workbenchSelectedId === scheme.id ? 'selected' : ''} ${isPriority ? 'priority' : ''}"
@@ -717,8 +777,8 @@ class App {
                   </div>
                   <div class="wb-scheme-footer">
                     ${totalChecks > 0 ? `
-                      <span class="check-badge ${errors > 0 ? 'check-error' : 'check-warning'}">
-                        ${errors > 0 ? '⚠' : 'ℹ'} ${totalChecks} 项提醒
+                      <span class="check-badge ${errors > 0 ? 'check-error' : warnings > 0 ? 'check-warning' : 'check-info'}">
+                        ${errors > 0 ? '⚠' : warnings > 0 ? '⚠' : 'ℹ'} ${totalChecks} 项提醒
                       </span>
                     ` : '<span class="check-badge check-info">无检查提醒</span>'}
                     ${readiness.isReadyForFinal ? (
@@ -1414,7 +1474,10 @@ class App {
         this.updateScheme(this.selectedId!, { riskLevel: (e.target as HTMLSelectElement).value as RiskLevel })
       })
       document.getElementById('detail-status')?.addEventListener('change', (e) => {
-        this.updateScheme(this.selectedId!, { status: (e.target as HTMLSelectElement).value as SchemeStatus })
+        const status = (e.target as HTMLSelectElement).value as SchemeStatus
+        if (!this.tryUpdateStatus(this.selectedId!, status)) {
+          this.render()
+        }
       })
       document.getElementById('detail-operationReminder')?.addEventListener('change', (e) => {
         this.updateScheme(this.selectedId!, { operationReminder: (e.target as HTMLTextAreaElement).value })
@@ -1554,7 +1617,7 @@ class App {
       document.querySelectorAll('[data-wb-status]').forEach(btn => {
         btn.addEventListener('click', () => {
           const status = btn.getAttribute('data-wb-status') as SchemeStatus
-          this.updateScheme(this.workbenchSelectedId!, { status })
+          this.tryUpdateStatus(this.workbenchSelectedId!, status)
         })
       })
     }

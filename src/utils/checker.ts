@@ -143,6 +143,7 @@ export function getSchemeReadiness(scheme: PatternScheme): SchemeReadiness {
     blockingReasons.length === 0 &&
     !hasMissingInfo &&
     !hasDurationOverflow &&
+    !hasColorConflict &&
     scheme.status !== '需调整' &&
     scheme.status !== '仅展示'
 
