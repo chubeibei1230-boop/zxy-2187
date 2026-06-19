@@ -1,7 +1,28 @@
-import type { PatternScheme, ColorInfo, StepNote, SchemeStatus, LineMethod, RiskLevel } from '../types'
+import type {
+  PatternScheme,
+  ColorInfo,
+  StepNote,
+  SchemeStatus,
+  LineMethod,
+  RiskLevel,
+  ReviewRecord,
+  FieldChange,
+  AdjustmentReason,
+  AdjustmentProgress,
+  FinalizedSummary,
+  ReviewConclusion,
+  ChangeField
+} from '../types'
 import { BOX_TYPES, COLORS, LINE_METHODS, STATUSES, RISK_LEVELS } from '../constants'
 
 const STORAGE_KEY = 'lacquer_pattern_schemes'
+
+const REVIEW_CONCLUSIONS: ReviewConclusion[] = ['通过', '需调整', '待定', '驳回']
+const CHANGE_FIELDS: ChangeField[] = [
+  'name', 'boxType', 'mainColor', 'secondaryColor', 'lineMethod',
+  'coatingCount', 'durationHours', 'targetAudience', 'operationReminder',
+  'status', 'colorDescription', 'riskLevel', 'stepNotes'
+]
 
 function isValidColorInfo(obj: unknown): obj is ColorInfo {
   if (!obj || typeof obj !== 'object') return false
@@ -17,6 +38,140 @@ function isValidStepNote(obj: unknown): obj is StepNote {
 
 function isInArray<T>(value: unknown, arr: readonly T[]): value is T {
   return arr.includes(value as T)
+}
+
+function isValidReviewRecord(obj: unknown): obj is ReviewRecord {
+  if (!obj || typeof obj !== 'object') return false
+  const r = obj as Record<string, unknown>
+  return (
+    typeof r.id === 'string' &&
+    typeof r.timestamp === 'number' &&
+    isInArray(r.conclusion, REVIEW_CONCLUSIONS) &&
+    typeof r.reviewer === 'string' &&
+    typeof r.comment === 'string' &&
+    isInArray(r.statusBefore, STATUSES) &&
+    isInArray(r.statusAfter, STATUSES)
+  )
+}
+
+function isValidFieldChange(obj: unknown): obj is FieldChange {
+  if (!obj || typeof obj !== 'object') return false
+  const f = obj as Record<string, unknown>
+  return (
+    typeof f.id === 'string' &&
+    typeof f.timestamp === 'number' &&
+    isInArray(f.field, CHANGE_FIELDS) &&
+    typeof f.fieldLabel === 'string' &&
+    typeof f.beforeValue === 'string' &&
+    typeof f.afterValue === 'string' &&
+    typeof f.operator === 'string'
+  )
+}
+
+function isValidAdjustmentReason(obj: unknown): obj is AdjustmentReason {
+  if (!obj || typeof obj !== 'object') return false
+  const a = obj as Record<string, unknown>
+  return (
+    typeof a.id === 'string' &&
+    typeof a.createdAt === 'number' &&
+    typeof a.content === 'string'
+  )
+}
+
+function isValidAdjustmentProgress(obj: unknown): obj is AdjustmentProgress {
+  if (!obj || typeof obj !== 'object') return false
+  const a = obj as Record<string, unknown>
+  return (
+    typeof a.id === 'string' &&
+    typeof a.timestamp === 'number' &&
+    typeof a.content === 'string' &&
+    typeof a.operator === 'string'
+  )
+}
+
+function isValidFinalizedSummary(obj: unknown): obj is FinalizedSummary {
+  if (!obj || typeof obj !== 'object') return false
+  const f = obj as Record<string, unknown>
+  if (typeof f.generatedAt !== 'number') return false
+  const mv = f.managerView as Record<string, unknown> | undefined
+  const wv = f.workbenchView as Record<string, unknown> | undefined
+  if (!mv || !wv) return false
+  if (typeof mv.decisionBasis !== 'string' || typeof mv.riskAssessment !== 'string') return false
+  if (!Array.isArray(mv.keyHighlights) || !mv.keyHighlights.every(h => typeof h === 'string')) return false
+  if (typeof wv.executionStandard !== 'string' || typeof wv.qualityRequirements !== 'string') return false
+  if (!Array.isArray(wv.keyPoints) || !wv.keyPoints.every(k => typeof k === 'string')) return false
+  return true
+}
+
+function validateReviewRecords(arr: unknown, schemeName: string, issues: string[]): ReviewRecord[] {
+  if (!Array.isArray(arr)) {
+    if (arr !== undefined) issues.push(`方案「${schemeName}」：评审记录格式无效，已重置`)
+    return []
+  }
+  const valid: ReviewRecord[] = []
+  arr.forEach((item, i) => {
+    if (isValidReviewRecord(item)) {
+      valid.push(item)
+    } else {
+      issues.push(`方案「${schemeName}」：第 ${i + 1} 条评审记录无效，已跳过`)
+    }
+  })
+  return valid
+}
+
+function validateFieldChanges(arr: unknown, schemeName: string, issues: string[]): FieldChange[] {
+  if (!Array.isArray(arr)) {
+    if (arr !== undefined) issues.push(`方案「${schemeName}」：变更记录格式无效，已重置`)
+    return []
+  }
+  const valid: FieldChange[] = []
+  arr.forEach((item, i) => {
+    if (isValidFieldChange(item)) {
+      valid.push(item)
+    } else {
+      issues.push(`方案「${schemeName}」：第 ${i + 1} 条变更记录无效，已跳过`)
+    }
+  })
+  return valid
+}
+
+function validateAdjustmentReasons(arr: unknown, schemeName: string, issues: string[]): AdjustmentReason[] {
+  if (!Array.isArray(arr)) {
+    if (arr !== undefined) issues.push(`方案「${schemeName}」：调整原因格式无效，已重置`)
+    return []
+  }
+  const valid: AdjustmentReason[] = []
+  arr.forEach((item, i) => {
+    if (isValidAdjustmentReason(item)) {
+      valid.push(item)
+    } else {
+      issues.push(`方案「${schemeName}」：第 ${i + 1} 条调整原因无效，已跳过`)
+    }
+  })
+  return valid
+}
+
+function validateAdjustmentProgress(arr: unknown, schemeName: string, issues: string[]): AdjustmentProgress[] {
+  if (!Array.isArray(arr)) {
+    if (arr !== undefined) issues.push(`方案「${schemeName}」：调整进展格式无效，已重置`)
+    return []
+  }
+  const valid: AdjustmentProgress[] = []
+  arr.forEach((item, i) => {
+    if (isValidAdjustmentProgress(item)) {
+      valid.push(item)
+    } else {
+      issues.push(`方案「${schemeName}」：第 ${i + 1} 条调整进展无效，已跳过`)
+    }
+  })
+  return valid
+}
+
+function validateFinalizedSummary(obj: unknown, schemeName: string, issues: string[]): FinalizedSummary | null {
+  if (obj === null || obj === undefined) return null
+  if (isValidFinalizedSummary(obj)) return obj
+  issues.push(`方案「${schemeName}」：定稿摘要格式无效，已重置`)
+  return null
 }
 
 function validateScheme(obj: unknown, index: number): { scheme: PatternScheme; issues: string[] } {
@@ -96,6 +251,14 @@ function validateScheme(obj: unknown, index: number): { scheme: PatternScheme; i
   }
 
   const now = Date.now()
+  const schemeNameForLog = name || `方案${index + 1}`
+
+  const reviewRecords = validateReviewRecords(o.reviewRecords, schemeNameForLog, issues)
+  const fieldChanges = validateFieldChanges(o.fieldChanges, schemeNameForLog, issues)
+  const adjustmentReasons = validateAdjustmentReasons(o.adjustmentReasons, schemeNameForLog, issues)
+  const adjustmentProgress = validateAdjustmentProgress(o.adjustmentProgress, schemeNameForLog, issues)
+  const finalizedSummary = validateFinalizedSummary(o.finalizedSummary, schemeNameForLog, issues)
+
   const scheme: PatternScheme = {
     id: typeof o.id === 'string' && o.id ? o.id : generateId(),
     name: name || `方案${index + 1}`,
@@ -112,7 +275,12 @@ function validateScheme(obj: unknown, index: number): { scheme: PatternScheme; i
     stepNotes,
     riskLevel,
     createdAt: typeof o.createdAt === 'number' && o.createdAt > 0 ? o.createdAt : now,
-    updatedAt: typeof o.updatedAt === 'number' && o.updatedAt > 0 ? o.updatedAt : now
+    updatedAt: typeof o.updatedAt === 'number' && o.updatedAt > 0 ? o.updatedAt : now,
+    reviewRecords,
+    fieldChanges,
+    adjustmentReasons,
+    adjustmentProgress,
+    finalizedSummary
   }
 
   return { scheme, issues }

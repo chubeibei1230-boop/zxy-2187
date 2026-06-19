@@ -1,11 +1,192 @@
-import type { PatternScheme } from '../types'
+import type { PatternScheme, ReviewRecord, FieldChange, AdjustmentReason, AdjustmentProgress } from '../types'
 import { COLORS, BOX_TYPES } from '../constants'
 import { generateId } from './storage'
+
+function createSampleReviews(schemeIndex: number): ReviewRecord[] {
+  const now = Date.now()
+  if (schemeIndex === 0) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 4,
+        conclusion: '需调整',
+        reviewer: '王工艺师',
+        comment: '初次评审：整体色彩搭配协调，但罩面次数需要从2次增加到3次，以保证漆面耐久性',
+        statusBefore: '待试配',
+        statusAfter: '需调整'
+      },
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 2,
+        conclusion: '通过',
+        reviewer: '李主管',
+        comment: '二次评审：调整后罩面次数已完善，配色庄重大气，适合节庆场合使用，同意定稿',
+        statusBefore: '需调整',
+        statusAfter: '已定稿'
+      }
+    ]
+  }
+  if (schemeIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 1,
+        conclusion: '需调整',
+        reviewer: '张评审',
+        comment: '云纹线条流畅度需要优化，紫色与藏蓝搭配略显沉闷，建议增加对比色点缀',
+        statusBefore: '待试配',
+        statusAfter: '需调整'
+      }
+    ]
+  }
+  if (schemeIndex === 3) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 3,
+        conclusion: '待定',
+        reviewer: '赵工艺',
+        comment: '藕荷色与金黄搭配视觉效果柔和，需实际试色确认最终效果',
+        statusBefore: '待试配',
+        statusAfter: '待试配'
+      },
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 2,
+        conclusion: '通过',
+        reviewer: '钱主管',
+        comment: '试色效果良好，配色柔和典雅，适合文房雅器类产品，同意定稿',
+        statusBefore: '待试配',
+        statusAfter: '已定稿'
+      }
+    ]
+  }
+  return []
+}
+
+function createSampleFieldChanges(schemeIndex: number): FieldChange[] {
+  const now = Date.now()
+  if (schemeIndex === 0) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 3,
+        field: 'coatingCount',
+        fieldLabel: '罩面次数',
+        beforeValue: '2 次',
+        afterValue: '3 次',
+        operator: '王工艺师',
+        reason: '根据评审意见，增加罩面次数提升漆面耐久性'
+      },
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 1.5,
+        field: 'durationHours',
+        fieldLabel: '预计时长',
+        beforeValue: '5 小时',
+        afterValue: '6 小时',
+        operator: '王工艺师',
+        reason: '罩面次数增加导致总时长相应调整'
+      }
+    ]
+  }
+  if (schemeIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 0.5,
+        field: 'riskLevel',
+        fieldLabel: '风险等级',
+        beforeValue: '中风险',
+        afterValue: '低风险',
+        operator: '系统',
+        reason: '调整步骤描述细化，风险等级下调'
+      }
+    ]
+  }
+  if (schemeIndex === 3) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 2.5,
+        field: 'colorDescription',
+        fieldLabel: '配色说明',
+        beforeValue: '金黄为底，藕荷回纹',
+        afterValue: '金黄为底，藕荷回纹，配色柔和',
+        operator: '赵工艺',
+        reason: '补充配色意境描述'
+      }
+    ]
+  }
+  return []
+}
+
+function createSampleAdjustmentReasons(schemeIndex: number): AdjustmentReason[] {
+  if (schemeIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        createdAt: Date.now() - 86400000 * 1,
+        content: '1. 云纹线条流畅度需优化，当前线条略显生硬\n2. 紫色与藏蓝搭配视觉上偏沉闷，建议增加少量明黄色点缀提升层次感\n3. 描银工艺效果待确认，可先试制小样评估'
+      }
+    ]
+  }
+  return []
+}
+
+function createSampleAdjustmentProgress(schemeIndex: number): AdjustmentProgress[] {
+  if (schemeIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        timestamp: Date.now() - 86400000 * 0.3,
+        content: '已开始调整云纹线条草稿，优化曲线弧度',
+        operator: '李工艺'
+      }
+    ]
+  }
+  return []
+}
+
+function createFinalizedSummary(schemeIndex: number) {
+  const now = Date.now()
+  if (schemeIndex === 0) {
+    return {
+      generatedAt: now - 86400000 * 1,
+      managerView: {
+        decisionBasis: '该方案配色庄重大气，朱砂红搭配明黄，符合传统节庆审美。经过两次评审，罩面次数由2次调整为3次，时长相应调整为6小时，满足质量与工期双重要求。',
+        riskAssessment: '整体风险可控，中等风险主要来源于描金工艺对操作人员技术要求较高，需安排有经验的工艺师执行。',
+        keyHighlights: ['传统节庆配色，市场接受度高', '工艺成熟，可复制性强', '罩面次数充足，产品耐久性好']
+      },
+      workbenchView: {
+        executionStandard: '严格按照5步工艺流程执行，朱砂底漆髹涂2-3遍，每遍阴干打磨；描金环节注意漆面干燥度，避免晕染。',
+        keyPoints: ['每遍漆髹涂后需彻底阴干（不少于24小时）', '描金前用细砂纸轻磨表面，增强附着力', '罩面漆采用薄涂多遍方式，每遍间隔24小时'],
+        qualityRequirements: '最终漆面平整光滑无颗粒，纹样线条流畅清晰，金粉附着牢固，色泽均匀无漏涂。'
+      }
+    }
+  }
+  if (schemeIndex === 3) {
+    return {
+      generatedAt: now - 86400000 * 2,
+      managerView: {
+        decisionBasis: '金黄与藕荷搭配，配色柔和典雅，经过试色确认效果良好。适合文房雅器类产品定位，受众明确为中级爱好者。',
+        riskAssessment: '工艺难度中等，色漆描线工艺相对成熟稳定，主要风险点在于套盒尺寸配合精度要求较高。',
+        keyHighlights: ['配色柔和典雅，符合文房气质', '套盒设计实用性强', '工艺相对成熟，量产风险低']
+      },
+      workbenchView: {
+        executionStandard: '套盒内外胎尺寸需精确控制，间隙不超过0.5mm。金黄底漆髹涂三遍，藕荷色回纹边框线条需工整对称。',
+        keyPoints: ['长方套盒各边尺寸误差控制在±0.3mm以内', '回纹边框四角连接处线条需流畅过渡', '罩面三遍，每遍打磨后用棉布擦净粉尘'],
+        qualityRequirements: '盒盖开合顺畅无卡顿，漆面色泽均匀，回纹线条工整无断笔，边角处无漆流挂现象。'
+      }
+    }
+  }
+  return null
+}
 
 export function createSampleSchemes(): PatternScheme[] {
   const now = Date.now()
 
-  return [
+  const baseSchemes: Omit<PatternScheme, 'reviewRecords' | 'fieldChanges' | 'adjustmentReasons' | 'adjustmentProgress' | 'finalizedSummary'>[] = [
     {
       id: generateId(),
       name: '朱砂描金方盒',
@@ -124,4 +305,13 @@ export function createSampleSchemes(): PatternScheme[] {
       updatedAt: now - 86400000 * 4
     }
   ]
+
+  return baseSchemes.map((base, index) => ({
+    ...base,
+    reviewRecords: createSampleReviews(index),
+    fieldChanges: createSampleFieldChanges(index),
+    adjustmentReasons: createSampleAdjustmentReasons(index),
+    adjustmentProgress: createSampleAdjustmentProgress(index),
+    finalizedSummary: createFinalizedSummary(index)
+  }))
 }

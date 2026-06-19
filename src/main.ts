@@ -8,7 +8,17 @@ import type {
   ColorInfo,
   WorkbenchView,
   WorkbenchTab,
-  SchemeReadiness
+  SchemeReadiness,
+  ReviewRecord,
+  FieldChange,
+  AdjustmentReason,
+  AdjustmentProgress,
+  FinalizedSummary,
+  ReviewConclusion,
+  ChangeField
+} from './types'
+import {
+  CHANGE_FIELD_LABELS
 } from './types'
 import {
   BOX_TYPES,
@@ -33,6 +43,13 @@ import { generateMaterialSummary } from './utils/material'
 import { createSampleSchemes } from './utils/sampleData'
 
 type AppView = 'manager' | 'workbench'
+
+const REVIEW_CONCLUSION_COLORS: Record<ReviewConclusion, string> = {
+  '通过': '#00A86B',
+  '需调整': '#C82506',
+  '待定': '#FFB61E',
+  '驳回': '#7B5EA7'
+}
 
 class App {
   private schemes: PatternScheme[] = []
@@ -63,6 +80,8 @@ class App {
     riskLevel: ''
   }
 
+  private summaryTabManager: Record<string, 'manager' | 'workbench'> = {}
+
   private appElement: HTMLElement
 
   constructor() {
@@ -73,7 +92,14 @@ class App {
   private init(): void {
     const stored = loadSchemes()
     if (stored.length > 0) {
-      this.schemes = stored
+      this.schemes = stored.map(s => ({
+        ...s,
+        reviewRecords: s.reviewRecords || [],
+        fieldChanges: s.fieldChanges || [],
+        adjustmentReasons: s.adjustmentReasons || [],
+        adjustmentProgress: s.adjustmentProgress || [],
+        finalizedSummary: s.finalizedSummary || null
+      }))
     } else {
       this.schemes = createSampleSchemes()
       this.save()
@@ -116,9 +142,144 @@ class App {
     return result
   }
 
+  private formatTimestamp(timestamp: number): string {
+    const date = new Date(timestamp)
+    const y = date.getFullYear()
+    const m = String(date.getMonth() + 1).padStart(2, '0')
+    const d = String(date.getDate()).padStart(2, '0')
+    const hh = String(date.getHours()).padStart(2, '0')
+    const mm = String(date.getMinutes()).padStart(2, '0')
+    return `${y}-${m}-${d} ${hh}:${mm}`
+  }
+
+  private serializeFieldValue(field: ChangeField, scheme: PatternScheme): string {
+    const value = (scheme as any)[field]
+    return this.serializeValue(field, value)
+  }
+
+  private serializeValue(field: ChangeField, value: any): string {
+    if (value === null || value === undefined) return '（未设置）'
+    switch (field) {
+      case 'mainColor':
+      case 'secondaryColor':
+        return value ? `${value.name}(${value.hex})` : '（未设置）'
+      case 'coatingCount':
+        return value !== null ? `${value} 次` : '（未设置）'
+      case 'durationHours':
+        return `${value} 小时`
+      case 'riskLevel':
+        return `${value}风险`
+      case 'stepNotes':
+        if (Array.isArray(value) && value.length > 0) {
+          return `共 ${value.length} 步`
+        }
+        return '（无步骤）'
+      default:
+        if (typeof value === 'string') {
+          return value || '（未填写）'
+        }
+        return String(value)
+    }
+  }
+
+  private generateFieldChange(id: string, field: ChangeField, before: any, after: any, operator: string, reason?: string): FieldChange {
+    return {
+      id: generateId(),
+      timestamp: Date.now(),
+      field,
+      fieldLabel: CHANGE_FIELD_LABELS[field],
+      beforeValue: this.serializeValue(field, before),
+      afterValue: this.serializeValue(field, after),
+      operator,
+      reason
+    }
+  }
+
+  private autoGenerateSummary(scheme: PatternScheme): FinalizedSummary {
+    const highlights: string[] = []
+    highlights.push(`盒型采用「${scheme.boxType}」，工艺类型明确`)
+    highlights.push(`主色「${scheme.mainColor.name}」搭配辅色「${scheme.secondaryColor.name}」，视觉层次清晰`)
+    highlights.push(`描线方式：${scheme.lineMethod}，工艺细节明确`)
+    if (scheme.coatingCount !== null) highlights.push(`罩面次数：${scheme.coatingCount} 次`)
+    highlights.push(`预计工时：${scheme.durationHours} 小时`)
+    highlights.push(`适合人群：${scheme.targetAudience || '通用'}`)
+
+    const keyPoints: string[] = []
+    keyPoints.push(`确认盒型：${scheme.boxType}`)
+    keyPoints.push(`主色 ${scheme.mainColor.name} (${scheme.mainColor.hex})`)
+    keyPoints.push(`辅色 ${scheme.secondaryColor.name} (${scheme.secondaryColor.hex})`)
+    keyPoints.push(`描线：${scheme.lineMethod}`)
+    if (scheme.coatingCount !== null) keyPoints.push(`罩面：${scheme.coatingCount} 次`)
+    keyPoints.push(`总工时：${scheme.durationHours} 小时`)
+    keyPoints.push(`步骤数：${scheme.stepNotes.length} 步`)
+
+    const decisionBasis = `经过综合评审，本方案在盒型选型合理，主辅色搭配协调，工艺流程明确，具备可执行性，符合活动物料准备标准。`
+
+    let riskAssessment = ''
+    if (scheme.riskLevel === '高') {
+      riskAssessment = '本方案工艺复杂度较高，对制作人员技术要求高，需安排经验丰富的工艺师全程把控质量，严格按照工艺要求执行。'
+    } else if (scheme.riskLevel === '中') {
+      riskAssessment = '本方案存在一定工艺难度，需按规范操作，重点关注配色准确性和工艺细节，注意关键环节质量把控。'
+    } else {
+      riskAssessment = '本方案工艺难度较低，适合常规制作流程，风险可控，按标准工艺标准执行即可。'
+    }
+
+    const executionStandard = `按标准工艺流程执行，确保每一步工艺参数准确，注意配色均匀性，保证成品质量一致。`
+
+    const qualityRequirements = `严格遵循工艺规范，确保配色准确、线条流畅、罩面均匀，成品达到${scheme.riskLevel}风险等级对应质量标准。`
+
+    return {
+      generatedAt: Date.now(),
+      managerView: {
+        decisionBasis,
+        riskAssessment,
+        keyHighlights: highlights
+      },
+      workbenchView: {
+        executionStandard,
+        keyPoints,
+        qualityRequirements
+      }
+    }
+  }
+
   private tryUpdateStatus(id: string, newStatus: SchemeStatus): boolean {
     const scheme = this.schemes.find(s => s.id === id)
     if (!scheme) return false
+
+    if (newStatus === '需调整' && scheme.status !== '需调整') {
+      const reason = prompt('请输入调整原因：', '')
+      if (reason === null) return false
+      if (!reason.trim()) {
+        alert('请输入调整原因')
+        return false
+      }
+
+      const newReason: AdjustmentReason = {
+        id: generateId(),
+        createdAt: Date.now(),
+        content: reason.trim()
+      }
+
+      const fieldChanges = [...scheme.fieldChanges]
+      fieldChanges.push(this.generateFieldChange(id, 'status', scheme.status, newStatus, '系统', reason.trim()))
+
+      const newAdjustmentReasons = [...scheme.adjustmentReasons, newReason]
+
+      const index = this.schemes.findIndex(s => s.id === id)
+      if (index !== -1) {
+        this.schemes[index] = {
+          ...this.schemes[index],
+          status: newStatus,
+          adjustmentReasons: newAdjustmentReasons,
+          fieldChanges,
+          updatedAt: Date.now()
+        }
+        this.save()
+        this.render()
+      }
+      return true
+    }
 
     if (newStatus === '已定稿' && scheme.status !== '已定稿') {
       const readiness = getSchemeReadiness(scheme)
@@ -130,11 +291,40 @@ class App {
         if (readiness.hasColorConflict) issues.push('主辅色对比度较低，可能影响视觉层次')
 
         const confirmMsg = `该方案暂不满足定稿条件，存在以下问题：\n\n${issues.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}\n\n是否仍要强制标记为「已定稿」？`
-        
+
         if (!confirm(confirmMsg)) {
           return false
         }
       }
+
+      const summary = this.autoGenerateSummary(scheme)
+      const reviewRecord: ReviewRecord = {
+        id: generateId(),
+        timestamp: Date.now(),
+        conclusion: '通过',
+        reviewer: '系统自动',
+        comment: '方案已通过评审，自动标记为已定稿状态。',
+        statusBefore: scheme.status,
+        statusAfter: '已定稿'
+      }
+
+      const fieldChanges = [...scheme.fieldChanges]
+      fieldChanges.push(this.generateFieldChange(id, 'status', scheme.status, newStatus, '系统'))
+
+      const index = this.schemes.findIndex(s => s.id === id)
+      if (index !== -1) {
+        this.schemes[index] = {
+          ...this.schemes[index],
+          status: newStatus,
+          finalizedSummary: summary,
+          reviewRecords: [...scheme.reviewRecords, reviewRecord],
+          fieldChanges,
+          updatedAt: Date.now()
+        }
+        this.save()
+        this.render()
+      }
+      return true
     }
 
     this.updateScheme(id, { status: newStatus })
@@ -144,9 +334,39 @@ class App {
   private updateScheme(id: string, updates: Partial<PatternScheme>): void {
     const index = this.schemes.findIndex(s => s.id === id)
     if (index !== -1) {
+      const original = { ...this.schemes[index] }
+      const newFieldChanges: FieldChange[] = []
+
+      Object.keys(updates).forEach(key => {
+        const field = key as ChangeField
+        if (key === 'updatedAt') return
+        const before = (original as any)[key]
+        const after = (updates as any)[key]
+
+        let isChanged = false
+        if (key === 'mainColor' || key === 'secondaryColor') {
+          if (before && after && (before.name !== after.name || before.hex !== after.hex)) {
+            isChanged = true
+          }
+        } else if (key === 'stepNotes') {
+          if (JSON.stringify(before) !== JSON.stringify(after)) {
+            isChanged = true
+          }
+        } else {
+          if (before !== after) {
+            isChanged = true
+          }
+        }
+
+        if (isChanged && CHANGE_FIELD_LABELS[field]) {
+          newFieldChanges.push(this.generateFieldChange(id, field, before, after, '用户修改'))
+        }
+      })
+
       this.schemes[index] = {
         ...this.schemes[index],
         ...updates,
+        fieldChanges: [...this.schemes[index].fieldChanges, ...newFieldChanges],
         updatedAt: Date.now()
       }
       this.save()
@@ -172,7 +392,12 @@ class App {
         status: '待试配',
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        stepNotes: original.stepNotes.map(s => ({ ...s }))
+        stepNotes: original.stepNotes.map(s => ({ ...s })),
+        reviewRecords: [],
+        fieldChanges: [],
+        adjustmentReasons: [],
+        adjustmentProgress: [],
+        finalizedSummary: null
       }
       this.addScheme(newScheme)
     }
@@ -209,7 +434,12 @@ class App {
       stepNotes: [{ step: 1, title: '制胎', note: '' }],
       riskLevel: '中',
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      reviewRecords: [],
+      fieldChanges: [],
+      adjustmentReasons: [],
+      adjustmentProgress: [],
+      finalizedSummary: null
     }
     this.addScheme(newScheme)
   }
@@ -252,7 +482,7 @@ class App {
           confirmMsg += `... 还有 ${notReadySchemes.length - 5} 个方案存在问题\n`
         }
         confirmMsg += `\n是否仍要将全部 ${toUpdate.length} 个方案强制标记为「已定稿」？`
-        
+
         if (!confirm(confirmMsg)) return
       } else {
         if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
@@ -264,7 +494,13 @@ class App {
     const toUpdateSet = new Set(toUpdate)
     this.schemes = this.schemes.map(s => {
       if (toUpdateSet.has(s.id)) {
-        return { ...s, status, updatedAt: Date.now() }
+        const newFieldChange = this.generateFieldChange(s.id, 'status', s.status, status, '批量操作')
+        return {
+          ...s,
+          status,
+          updatedAt: Date.now(),
+          fieldChanges: [...s.fieldChanges, newFieldChange]
+        }
       }
       return s
     })
@@ -286,6 +522,235 @@ class App {
       filtered.forEach(s => this.selectedIds.add(s.id))
     }
     this.render()
+  }
+
+  private renderReviewSection(scheme: PatternScheme, prefix: string = ''): string {
+    const sortedRecords = [...scheme.reviewRecords].sort((a, b) => b.timestamp - a.timestamp)
+
+    const conclusionOptions: ReviewConclusion[] = ['通过', '需调整', '待定', '驳回']
+
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">
+          <span>📋 评审记录</span>
+          <span style="font-size:12px; color:var(--text-light); font-weight:normal">共 ${scheme.reviewRecords.length} 条</span>
+        </div>
+
+        <div class="review-timeline" style="margin-bottom:16px">
+          ${sortedRecords.length === 0 ? `
+            <div style="padding:16px; text-align:center; color:var(--text-muted); font-size:13px; background:var(--bg); border-radius:6px">
+              暂无评审记录
+            </div>
+          ` : sortedRecords.map(record => `
+            <div class="timeline-item" style="display:flex; gap:12px; padding:12px 0; border-bottom:1px dashed var(--border-light)">
+              <div style="flex-shrink:0; width:8px; height:8px; border-radius:50%; background:${REVIEW_CONCLUSION_COLORS[record.conclusion]}; margin-top:8px"></div>
+              <div style="flex:1">
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px">
+                  <span class="scheme-status" style="background:${REVIEW_CONCLUSION_COLORS[record.conclusion]}; font-size:11px; padding:2px 8px">${record.conclusion}</span>
+                  <span style="font-weight:500; font-size:13px">${this.escapeHtml(record.reviewer)}</span>
+                  <span style="color:var(--text-light); font-size:12px">${this.formatTimestamp(record.timestamp)}</span>
+                </div>
+                ${record.comment ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px">${this.escapeHtml(record.comment)}</div>` : ''}
+                <div style="font-size:12px; color:var(--text-muted); margin-top:4px">
+                  状态变化：${record.statusBefore} → ${record.statusAfter}
+                </div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="review-form" style="background:var(--bg); padding:12px; border-radius:6px">
+          <div style="font-size:13px; font-weight:500; margin-bottom:8px">添加评审记录</div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:8px">
+            <div>
+              <label style="display:block; font-size:12px; color:var(--text-light); margin-bottom:4px">评审结论</label>
+              <select id="${prefix}review-conclusion" style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+                ${conclusionOptions.map(c => `<option value="${c}" style="color:${REVIEW_CONCLUSION_COLORS[c]}">${c}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="display:block; font-size:12px; color:var(--text-light); margin-bottom:4px">评审人</label>
+              <input type="text" id="${prefix}review-reviewer" placeholder="请输入评审人姓名" style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+            </div>
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="display:block; font-size:12px; color:var(--text-light); margin-bottom:4px">评审意见</label>
+            <textarea id="${prefix}review-comment" rows="2" placeholder="请输入评审意见..." style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:4px; font-size:13px; resize:vertical"></textarea>
+          </div>
+          <button class="btn btn-sm btn-primary" id="${prefix}btn-add-review" style="width:100%">+ 添加评审记录</button>
+        </div>
+      </div>
+    `
+  }
+
+  private renderChangeTimeline(scheme: PatternScheme): string {
+    const sortedChanges = [...scheme.fieldChanges].sort((a, b) => b.timestamp - a.timestamp)
+
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">
+          <span>📝 变更轨迹</span>
+          <span style="font-size:12px; color:var(--text-light); font-weight:normal">共 ${scheme.fieldChanges.length} 条变更</span>
+        </div>
+
+        <div class="change-timeline">
+          ${sortedChanges.length === 0 ? `
+            <div style="padding:16px; text-align:center; color:var(--text-muted); font-size:13px; background:var(--bg); border-radius:6px">
+              暂无变更记录
+            </div>
+          ` : sortedChanges.map(change => `
+            <div class="timeline-item" style="display:flex; gap:12px; padding:10px 0; border-bottom:1px dashed var(--border-light)">
+              <div style="flex-shrink:0; width:6px; height:6px; border-radius:50%; background:var(--primary); margin-top:10px"></div>
+              <div style="flex:1">
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px">
+                  <span style="font-weight:500; font-size:13px">${change.fieldLabel}</span>
+                  <span style="color:var(--text-light); font-size:12px">${this.formatTimestamp(change.timestamp)}</span>
+                  <span style="color:var(--text-muted); font-size:12px; margin-left:auto">操作人：${this.escapeHtml(change.operator)}</span>
+                </div>
+                <div style="font-size:12px; color:var(--text-secondary); display:flex; align-items:center; gap:6px; flex-wrap:wrap">
+                  <span style="background:#FFF5F5; color:#C82506; padding:2px 6px; border-radius:3px">${this.escapeHtml(change.beforeValue)}</span>
+                  <span style="color:var(--text-muted)">→</span>
+                  <span style="background:#F0FFF4; color:#00A86B; padding:2px 6px; border-radius:3px">${this.escapeHtml(change.afterValue)}</span>
+                </div>
+                ${change.reason ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px">原因：${this.escapeHtml(change.reason)}</div>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `
+  }
+
+  private renderAdjustmentPanel(scheme: PatternScheme, prefix: string = ''): string {
+    if (scheme.status !== '需调整') return ''
+
+    const pendingReasons = [...scheme.adjustmentReasons]
+    const recentProgress = [...scheme.adjustmentProgress].sort((a, b) => b.timestamp - a.timestamp).slice(0, 5)
+
+    return `
+      <div class="detail-section" style="background:#FFF5F5; border:1px solid #FFD6D6">
+        <div class="detail-section-title" style="color:#C82506">
+          <span>⚠ 调整处理面板</span>
+          <span style="font-size:12px; font-weight:normal; color:#C82506">待处理原因：${pendingReasons.length} 项</span>
+        </div>
+
+        ${pendingReasons.length > 0 ? `
+          <div style="margin-bottom:12px">
+            <div style="font-size:12px; color:var(--text-light); margin-bottom:6px">待处理调整原因：</div>
+            ${pendingReasons.map(r => `
+              <div style="background:#fff; padding:8px 12px; border-radius:4px; font-size:13px; margin-bottom:6px; border-left:3px solid #C82506">
+                <div style="display:flex; justify-content:space-between; align-items:center">
+                  <span>${this.escapeHtml(r.content)}</span>
+                  <span style="font-size:11px; color:var(--text-light)">${this.formatTimestamp(r.createdAt)}</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        ${recentProgress.length > 0 ? `
+          <div style="margin-bottom:12px">
+            <div style="font-size:12px; color:var(--text-light); margin-bottom:6px">最近处理进展：</div>
+            ${recentProgress.map(p => `
+              <div style="background:#fff; padding:8px 12px; border-radius:4px; font-size:13px; margin-bottom:6px; border-left:3px solid #FFB61E">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px">
+                  <span style="font-weight:500">${this.escapeHtml(p.operator)}</span>
+                  <span style="font-size:11px; color:var(--text-light)">${this.formatTimestamp(p.timestamp)}</span>
+                </div>
+                <div style="color:var(--text-secondary)">${this.escapeHtml(p.content)}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        <div style="background:#fff; padding:12px; border-radius:6px">
+          <div style="font-size:13px; font-weight:500; margin-bottom:8px">添加处理进展</div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:8px">
+            <div>
+              <label style="display:block; font-size:12px; color:var(--text-light); margin-bottom:4px">处理人</label>
+              <input type="text" id="${prefix}progress-operator" placeholder="请输入处理人姓名" style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+            </div>
+            <div></div>
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="display:block; font-size:12px; color:var(--text-light); margin-bottom:4px">进展说明</label>
+            <textarea id="${prefix}progress-content" rows="2" placeholder="请描述当前处理进展..." style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:4px; font-size:13px; resize:vertical"></textarea>
+          </div>
+          <button class="btn btn-sm" id="${prefix}btn-add-progress" style="width:100%; background:#FFB61E; color:#fff; border-color:#FFB61E">+ 添加处理进展</button>
+        </div>
+      </div>
+    `
+  }
+
+  private renderFinalizedSummarySection(scheme: PatternScheme, prefix: string = ''): string {
+    const hasSummary = scheme.finalizedSummary !== null
+    const isFinalOrHasSummary = scheme.status === '已定稿' || hasSummary
+    if (!isFinalOrHasSummary) return ''
+
+    const currentTab = this.summaryTabManager[scheme.id] || 'manager'
+
+    return `
+      <div class="detail-section" style="background:#F0FFF4; border:1px solid #B8E6C8">
+        <div class="detail-section-title" style="color:#00A86B">
+          <span>📄 定稿摘要</span>
+          ${hasSummary ? `<span style="font-size:12px; font-weight:normal; color:#00A86B">生成时间：${this.formatTimestamp(scheme.finalizedSummary!.generatedAt)}</span>` : ''}
+        </div>
+
+        ${!hasSummary ? `
+          <div style="text-align:center; padding:20px">
+            <div style="color:var(--text-muted); font-size:13px; margin-bottom:12px">
+              ${scheme.status === '已定稿' ? '尚未生成定稿摘要，点击下方按钮自动生成' : '可以生成定稿摘要以便查看'}
+            </div>
+            <button class="btn btn-sm btn-primary" id="${prefix}btn-gen-summary">自动生成定稿摘要</button>
+          </div>
+        ` : `
+          <div class="summary-tabs" style="display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--border-light)">
+            <button class="summary-tab ${currentTab === 'manager' ? 'active' : ''}" data-summary-tab="manager" data-scheme-id="${scheme.id}" style="padding:6px 16px; border:none; background:${currentTab === 'manager' ? 'var(--primary)' : 'transparent'}; color:${currentTab === 'manager' ? '#fff' : 'var(--text-secondary)'}; border-radius:4px 4px 0 0; font-size:13px; cursor:pointer">
+              👔 管理视角
+            </button>
+            <button class="summary-tab ${currentTab === 'workbench' ? 'active' : ''}" data-summary-tab="workbench" data-scheme-id="${scheme.id}" style="padding:6px 16px; border:none; background:${currentTab === 'workbench' ? 'var(--primary)' : 'transparent'}; color:${currentTab === 'workbench' ? '#fff' : 'var(--text-secondary)'}; border-radius:4px 4px 0 0; font-size:13px; cursor:pointer">
+              🔧 工位视角
+            </button>
+          </div>
+
+          ${currentTab === 'manager' ? `
+            <div class="summary-content" style="background:#fff; padding:12px; border-radius:6px">
+              <div style="margin-bottom:12px">
+                <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:6px">决策依据</div>
+                <div style="font-size:13px; color:var(--text-secondary); line-height:1.6">${this.escapeHtml(scheme.finalizedSummary!.managerView.decisionBasis)}</div>
+              </div>
+              <div style="margin-bottom:12px">
+                <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:6px">风险评估</div>
+                <div style="font-size:13px; color:var(--text-secondary); line-height:1.6">${this.escapeHtml(scheme.finalizedSummary!.managerView.riskAssessment)}</div>
+              </div>
+              <div>
+                <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:6px">关键亮点</div>
+                <ul style="margin:0; padding-left:20px; font-size:13px; color:var(--text-secondary); line-height:1.8">
+                  ${scheme.finalizedSummary!.managerView.keyHighlights.map(h => `<li>${this.escapeHtml(h)}</li>`).join('')}
+                </ul>
+              </div>
+            </div>
+          ` : `
+            <div class="summary-content" style="background:#fff; padding:12px; border-radius:6px">
+              <div style="margin-bottom:12px">
+                <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:6px">执行标准</div>
+                <div style="font-size:13px; color:var(--text-secondary); line-height:1.6">${this.escapeHtml(scheme.finalizedSummary!.workbenchView.executionStandard)}</div>
+              </div>
+              <div style="margin-bottom:12px">
+                <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:6px">关键要点</div>
+                <ul style="margin:0; padding-left:20px; font-size:13px; color:var(--text-secondary); line-height:1.8">
+                  ${scheme.finalizedSummary!.workbenchView.keyPoints.map(k => `<li>${this.escapeHtml(k)}</li>`).join('')}
+                </ul>
+              </div>
+              <div>
+                <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:6px">质量要求</div>
+                <div style="font-size:13px; color:var(--text-secondary); line-height:1.6">${this.escapeHtml(scheme.finalizedSummary!.workbenchView.qualityRequirements)}</div>
+              </div>
+            </div>
+          `}
+        `}
+      </div>
+    `
   }
 
   private render(): void {
@@ -342,12 +807,12 @@ class App {
           <button class="btn btn-primary btn-sm" id="btn-new">+ 新增方案</button>
         </div>
       </header>
-      
+
       <div class="main-content">
         <aside class="sidebar">
           <div class="filter-section">
             <div class="filter-title">筛选条件</div>
-            
+
             <div class="filter-row">
               <label>盒型</label>
               <select id="filter-boxType">
@@ -355,7 +820,7 @@ class App {
                 ${BOX_TYPES.map(bt => `<option value="${bt}" ${this.filters.boxType === bt ? 'selected' : ''}>${bt}</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>主色</label>
               <select id="filter-mainColor">
@@ -363,7 +828,7 @@ class App {
                 ${COLORS.map(c => `<option value="${c.name}" ${this.filters.mainColor === c.name ? 'selected' : ''}>${c.name}</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>状态</label>
               <select id="filter-status">
@@ -371,15 +836,15 @@ class App {
                 ${STATUSES.map(s => `<option value="${s}" ${this.filters.status === s ? 'selected' : ''}>${s}</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>风险等级</label>
               <select id="filter-riskLevel">
                 <option value="">全部等级</option>
-                ${RISK_LEVELS.map(r => `<option value="${r}" ${this.filters.riskLevel === r ? 'selected' : ''}>${r}</option>`).join('')}
+                ${RISK_LEVELS.map(r => `<option value="${r}" ${this.filters.riskLevel === r ? 'selected' : ''}>${r}风险</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>时长范围（小时）</label>
               <div class="duration-range">
@@ -388,7 +853,7 @@ class App {
                 <input type="number" id="filter-maxDuration" placeholder="最大" value="${this.filters.maxDuration ?? ''}" min="0" step="0.5">
               </div>
             </div>
-            
+
             <div class="filter-row" style="margin-top:12px">
               <label style="display:flex; align-items:center; gap:6px; cursor:pointer">
                 <input type="checkbox" id="filter-batchMode" ${this.batchMode ? 'checked' : ''}>
@@ -396,12 +861,12 @@ class App {
               </label>
             </div>
           </div>
-          
+
           <div class="list-header">
             <div class="list-title">方案列表</div>
             <div class="list-count">${filtered.length} 项</div>
           </div>
-          
+
           <div class="list-container" id="scheme-list">
             ${filtered.length === 0 ? `
               <div class="empty-state">
@@ -441,7 +906,7 @@ class App {
               `
             }).join('')}
           </div>
-          
+
           ${this.batchMode ? `
             <div class="batch-actions">
               <label>
@@ -456,7 +921,7 @@ class App {
             </div>
           ` : ''}
         </aside>
-        
+
         <main class="detail-panel">
           ${selectedScheme ? this.renderManagerDetail(selectedScheme, selectedChecks) : `
             <div class="empty-state">
@@ -466,7 +931,7 @@ class App {
           `}
         </main>
       </div>
-      
+
       ${this.showFinalizedModal ? this.renderFinalizedModal() : ''}
     `
   }
@@ -485,7 +950,7 @@ class App {
           <button class="btn btn-sm" id="btn-delete" style="color:#C82506; border-color:#E8B0B0">删除</button>
         </div>
       </div>
-      
+
       <div class="detail-body">
         ${checks.length > 0 ? `
           <div class="detail-section checks-panel">
@@ -505,7 +970,7 @@ class App {
             ` : ''}
           </div>
         ` : ''}
-        
+
         <div class="detail-section">
           <div class="detail-section-title">基本信息</div>
           <div class="detail-grid">
@@ -547,7 +1012,7 @@ class App {
             </div>
           </div>
         </div>
-        
+
         <div class="detail-section">
           <div class="detail-section-title">配色方案</div>
           <div class="detail-grid">
@@ -581,21 +1046,21 @@ class App {
             </div>
           </div>
         </div>
-        
+
         <div class="detail-section">
           <div class="detail-section-title">操作提醒</div>
           <div class="detail-field">
             <textarea id="detail-operationReminder" rows="2" placeholder="填写操作注意事项...">${this.escapeHtml(scheme.operationReminder)}</textarea>
           </div>
         </div>
-        
+
         <div class="detail-section">
           <div class="detail-section-title">配色说明</div>
           <div class="detail-field">
             <textarea id="detail-colorDescription" rows="3" placeholder="描述整体配色风格和意境...">${this.escapeHtml(scheme.colorDescription)}</textarea>
           </div>
         </div>
-        
+
         <div class="detail-section">
           <div class="detail-section-title">
             <span>步骤备注</span>
@@ -621,6 +1086,11 @@ class App {
           </ul>
           <button class="add-step-btn" id="btn-add-step">+ 添加步骤</button>
         </div>
+
+        ${this.renderReviewSection(scheme, '')}
+        ${this.renderChangeTimeline(scheme)}
+        ${this.renderAdjustmentPanel(scheme, '')}
+        ${this.renderFinalizedSummarySection(scheme, '')}
       </div>
     `
   }
@@ -692,7 +1162,7 @@ class App {
                 📁 全部方案
               </button>
             </div>
-            
+
             <div class="filter-row">
               <label>盒型</label>
               <select id="wb-filter-boxType">
@@ -700,7 +1170,7 @@ class App {
                 ${BOX_TYPES.map(bt => `<option value="${bt}" ${this.workbenchFilters.boxType === bt ? 'selected' : ''}>${bt}</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>主色</label>
               <select id="wb-filter-mainColor">
@@ -708,7 +1178,7 @@ class App {
                 ${COLORS.map(c => `<option value="${c.name}" ${this.workbenchFilters.mainColor === c.name ? 'selected' : ''}>${c.name}</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>风险等级</label>
               <select id="wb-filter-riskLevel">
@@ -724,7 +1194,7 @@ class App {
                 ${STATUSES.map(s => `<option value="${s}" ${this.workbenchFilters.status === s ? 'selected' : ''}>${s}</option>`).join('')}
               </select>
             </div>
-            
+
             <div class="filter-row">
               <label>预计时长（小时）</label>
               <div class="duration-range">
@@ -734,12 +1204,12 @@ class App {
               </div>
             </div>
           </div>
-          
+
           <div class="list-header">
             <div class="list-title">${this.workbenchView === 'priority' ? '待处理方案' : '方案列表'}</div>
             <div class="list-count">${filtered.length} 项</div>
           </div>
-          
+
           <div class="list-container" id="wb-scheme-list">
             ${filtered.length === 0 ? `
               <div class="empty-state">
@@ -993,6 +1463,11 @@ class App {
             </div>
           </div>
         </div>
+
+        ${this.renderReviewSection(scheme, 'wb-')}
+        ${this.renderChangeTimeline(scheme)}
+        ${this.renderAdjustmentPanel(scheme, 'wb-')}
+        ${this.renderFinalizedSummarySection(scheme, 'wb-')}
       </div>
     `
   }
@@ -1168,7 +1643,7 @@ class App {
               <h1 style="font-size:24px; margin-bottom:8px">漆盒纹样定稿清单</h1>
               <p style="color:#666">生成时间：${new Date().toLocaleString('zh-CN')}</p>
             </div>
-            
+
             <div class="finalized-section">
               <div class="finalized-section-title">📊 概览</div>
               <div style="display:flex; gap:24px; font-size:13px">
@@ -1186,7 +1661,7 @@ class App {
                 </div>
               </div>
             </div>
-            
+
             <div class="finalized-section">
               <div class="finalized-section-title">🎨 主色材料汇总</div>
               <div class="material-summary-grid">
@@ -1204,7 +1679,7 @@ class App {
                 }).join('') : '<div style="color:var(--text-muted)">暂无数据</div>'}
               </div>
             </div>
-            
+
             <div class="finalized-section">
               <div class="finalized-section-title">🎨 辅色材料汇总</div>
               <div class="material-summary-grid">
@@ -1222,7 +1697,7 @@ class App {
                 }).join('') : '<div style="color:var(--text-muted)">暂无数据</div>'}
               </div>
             </div>
-            
+
             <div class="finalized-section">
               <div class="finalized-section-title">✒️ 描线方式汇总</div>
               <div style="display:flex; gap:12px; flex-wrap:wrap">
@@ -1233,7 +1708,7 @@ class App {
                 `).join('') : '<span style="color:var(--text-muted)">暂无数据</span>'}
               </div>
             </div>
-            
+
             <div class="finalized-section">
               <div class="finalized-section-title">📋 方案明细</div>
               <table class="finalized-table">
@@ -1271,7 +1746,7 @@ class App {
                 </tbody>
               </table>
             </div>
-            
+
             ${summary.excludedSchemes.length > 0 ? `
               <div class="finalized-section" style="background: #FFF5F5; border: 1px solid #FFD6D6">
                 <div class="finalized-section-title" style="color: #C82506">⚠ 已排除的不可执行方案（${summary.excludedSchemes.length} 个）</div>
@@ -1313,7 +1788,7 @@ class App {
         try {
           const result = await importFromJson(file)
           const { schemes: imported, issues } = result
-          
+
           let message = `成功导入 ${imported.length} 个方案`
           if (issues.length > 0) {
             message += `\n\n以下问题已自动修正：\n• ${issues.slice(0, 10).join('\n• ')}`
@@ -1321,7 +1796,7 @@ class App {
               message += `\n... 还有 ${issues.length - 10} 条修正记录`
             }
           }
-          
+
           const action = confirm(`${message}\n\n是否合并到当前数据？\n取消则替换现有数据。`)
           if (action) {
             this.schemes = [...this.schemes, ...imported]
@@ -1551,6 +2026,99 @@ class App {
         this.showChecks = !this.showChecks
         this.render()
       })
+
+      const scheme = this.getSelectedScheme()
+      if (scheme) {
+        document.getElementById('btn-add-review')?.addEventListener('click', () => {
+          const conclusion = (document.getElementById('review-conclusion') as HTMLSelectElement)?.value as ReviewConclusion
+          const reviewer = (document.getElementById('review-reviewer') as HTMLInputElement)?.value?.trim()
+          const comment = (document.getElementById('review-comment') as HTMLTextAreaElement)?.value?.trim()
+
+          if (!reviewer) {
+            alert('请输入评审人姓名')
+            return
+          }
+
+          const reviewRecord: ReviewRecord = {
+            id: generateId(),
+            timestamp: Date.now(),
+            conclusion,
+            reviewer,
+            comment: comment || '',
+            statusBefore: scheme.status,
+            statusAfter: scheme.status
+          }
+
+          const fieldChange = this.generateFieldChange(scheme.id, 'status', scheme.status, scheme.status, reviewer, comment || '添加评审记录')
+
+          const index = this.schemes.findIndex(s => s.id === scheme.id)
+          if (index !== -1) {
+            this.schemes[index] = {
+              ...this.schemes[index],
+              reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+              fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
+              updatedAt: Date.now()
+            }
+            this.save()
+            this.render()
+          }
+        })
+
+        document.getElementById('btn-add-progress')?.addEventListener('click', () => {
+          const operator = (document.getElementById('progress-operator') as HTMLInputElement)?.value?.trim()
+          const content = (document.getElementById('progress-content') as HTMLTextAreaElement)?.value?.trim()
+
+          if (!operator) {
+            alert('请输入处理人姓名')
+            return
+          }
+          if (!content) {
+            alert('请输入进展说明')
+            return
+          }
+
+          const progress: AdjustmentProgress = {
+            id: generateId(),
+            timestamp: Date.now(),
+            content,
+            operator
+          }
+
+          const index = this.schemes.findIndex(s => s.id === scheme.id)
+          if (index !== -1) {
+            this.schemes[index] = {
+              ...this.schemes[index],
+              adjustmentProgress: [...this.schemes[index].adjustmentProgress, progress],
+              updatedAt: Date.now()
+            }
+            this.save()
+            this.render()
+          }
+        })
+
+        document.getElementById('btn-gen-summary')?.addEventListener('click', () => {
+          const summary = this.autoGenerateSummary(scheme)
+          const index = this.schemes.findIndex(s => s.id === scheme.id)
+          if (index !== -1) {
+            this.schemes[index] = {
+              ...this.schemes[index],
+              finalizedSummary: summary,
+              updatedAt: Date.now()
+            }
+            this.save()
+            this.render()
+          }
+        })
+      }
+
+      document.querySelectorAll('[data-summary-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.getAttribute('data-summary-tab') as 'manager' | 'workbench'
+          const schemeId = btn.getAttribute('data-scheme-id')!
+          this.summaryTabManager[schemeId] = tab
+          this.render()
+        })
+      })
     }
   }
 
@@ -1618,6 +2186,99 @@ class App {
         btn.addEventListener('click', () => {
           const status = btn.getAttribute('data-wb-status') as SchemeStatus
           this.tryUpdateStatus(this.workbenchSelectedId!, status)
+        })
+      })
+
+      const scheme = this.getWorkbenchSelectedScheme()
+      if (scheme) {
+        document.getElementById('wb-btn-add-review')?.addEventListener('click', () => {
+          const conclusion = (document.getElementById('wb-review-conclusion') as HTMLSelectElement)?.value as ReviewConclusion
+          const reviewer = (document.getElementById('wb-review-reviewer') as HTMLInputElement)?.value?.trim()
+          const comment = (document.getElementById('wb-review-comment') as HTMLTextAreaElement)?.value?.trim()
+
+          if (!reviewer) {
+            alert('请输入评审人姓名')
+            return
+          }
+
+          const reviewRecord: ReviewRecord = {
+            id: generateId(),
+            timestamp: Date.now(),
+            conclusion,
+            reviewer,
+            comment: comment || '',
+            statusBefore: scheme.status,
+            statusAfter: scheme.status
+          }
+
+          const fieldChange = this.generateFieldChange(scheme.id, 'status', scheme.status, scheme.status, reviewer, comment || '添加评审记录')
+
+          const index = this.schemes.findIndex(s => s.id === scheme.id)
+          if (index !== -1) {
+            this.schemes[index] = {
+              ...this.schemes[index],
+              reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+              fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
+              updatedAt: Date.now()
+            }
+            this.save()
+            this.render()
+          }
+        })
+
+        document.getElementById('wb-btn-add-progress')?.addEventListener('click', () => {
+          const operator = (document.getElementById('wb-progress-operator') as HTMLInputElement)?.value?.trim()
+          const content = (document.getElementById('wb-progress-content') as HTMLTextAreaElement)?.value?.trim()
+
+          if (!operator) {
+            alert('请输入处理人姓名')
+            return
+          }
+          if (!content) {
+            alert('请输入进展说明')
+            return
+          }
+
+          const progress: AdjustmentProgress = {
+            id: generateId(),
+            timestamp: Date.now(),
+            content,
+            operator
+          }
+
+          const index = this.schemes.findIndex(s => s.id === scheme.id)
+          if (index !== -1) {
+            this.schemes[index] = {
+              ...this.schemes[index],
+              adjustmentProgress: [...this.schemes[index].adjustmentProgress, progress],
+              updatedAt: Date.now()
+            }
+            this.save()
+            this.render()
+          }
+        })
+
+        document.getElementById('wb-btn-gen-summary')?.addEventListener('click', () => {
+          const summary = this.autoGenerateSummary(scheme)
+          const index = this.schemes.findIndex(s => s.id === scheme.id)
+          if (index !== -1) {
+            this.schemes[index] = {
+              ...this.schemes[index],
+              finalizedSummary: summary,
+              updatedAt: Date.now()
+            }
+            this.save()
+            this.render()
+          }
+        })
+      }
+
+      document.querySelectorAll('[data-summary-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.getAttribute('data-summary-tab') as 'manager' | 'workbench'
+          const schemeId = btn.getAttribute('data-scheme-id')!
+          this.summaryTabManager[schemeId] = tab
+          this.render()
         })
       })
     }

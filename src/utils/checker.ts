@@ -56,11 +56,28 @@ export function checkSingleScheme(scheme: PatternScheme): CheckResult[] {
     })
   }
 
-  if (scheme.status === '需调整' && !scheme.colorDescription?.includes('调整') && !scheme.stepNotes.some(s => s.note.includes('调整'))) {
+  if (scheme.status === '需调整') {
+    if (scheme.adjustmentReasons.length === 0) {
+      results.push({
+        id: `adjustment-reason-missing-${scheme.id}`,
+        type: 'info',
+        message: '状态为「需调整」但未登记待处理原因，建议补充说明'
+      })
+    }
+    if (scheme.adjustmentProgress.length === 0) {
+      results.push({
+        id: `adjustment-progress-missing-${scheme.id}`,
+        type: 'info',
+        message: '状态为「需调整」但未记录处理进展，请及时更新'
+      })
+    }
+  }
+
+  if (scheme.status === '已定稿' && !scheme.finalizedSummary) {
     results.push({
-      id: `status-note-mismatch-${scheme.id}`,
-      type: 'info',
-      message: '状态为「需调整」但配色说明和步骤备注中未找到调整相关内容'
+      id: `summary-missing-${scheme.id}`,
+      type: 'warning',
+      message: '已定稿方案未生成定稿摘要，请点击生成摘要'
     })
   }
 
@@ -129,15 +146,18 @@ export function getSchemeReadiness(scheme: PatternScheme): SchemeReadiness {
 
   const hasInsufficientAdjustment =
     scheme.status === '需调整' &&
-    !scheme.colorDescription.includes('调整') &&
-    !scheme.stepNotes.some(s => s.note.includes('调整'))
+    (scheme.adjustmentReasons.length === 0 || scheme.adjustmentProgress.length === 0)
 
   let priorityScore = 0
   if (errors.length > 0) priorityScore += errors.length * 100
   if (warnings.length > 0) priorityScore += warnings.length * 10
   if (infos.length > 0) priorityScore += infos.length * 1
-  if (scheme.status === '需调整') priorityScore += 50
+  if (scheme.status === '需调整') {
+    priorityScore += 50
+    if (scheme.adjustmentProgress.length === 0) priorityScore += 30
+  }
   if (scheme.status === '待试配') priorityScore += 20
+  if (scheme.status === '已定稿' && !scheme.finalizedSummary) priorityScore += 15
 
   const isReadyForFinal =
     blockingReasons.length === 0 &&
