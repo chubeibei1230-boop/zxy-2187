@@ -9,10 +9,11 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
   totalHours: number
   boxTypeSummary: { type: string; count: number }[]
   executableSchemes: PatternScheme[]
+  allFinalizedSchemes: PatternScheme[]
   excludedSchemes: { name: string; reasons: string[] }[]
 } {
-  const finalizedSchemes = schemes.filter(s => {
-    if (s.status !== '已定稿') return false
+  const allFinalizedSchemes = schemes.filter(s => s.status === '已定稿')
+  const finalizedSchemes = allFinalizedSchemes.filter(s => {
     const readiness = getSchemeReadiness(s)
     return readiness.isReadyForFinal
   })
@@ -40,7 +41,7 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
   const boxTypeMap = new Map<string, number>()
   let totalHours = 0
 
-  finalizedSchemes.forEach(scheme => {
+  allFinalizedSchemes.forEach(scheme => {
     const mc = scheme.mainColor.name
     if (!mainColorMap.has(mc)) {
       mainColorMap.set(mc, { count: 0, boxTypes: new Set() })
@@ -85,10 +86,11 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
     mainColors,
     secondaryColors,
     lineMethods,
-    totalSchemes: finalizedSchemes.length,
+    totalSchemes: allFinalizedSchemes.length,
     totalHours,
     boxTypeSummary,
     executableSchemes: finalizedSchemes,
+    allFinalizedSchemes,
     excludedSchemes
   }
 }

@@ -455,6 +455,17 @@ class App {
       return
     }
 
+    let adjustmentReason = ''
+    if (status === '需调整') {
+      const reason = prompt(`请输入这 ${toUpdate.length} 个方案的调整原因：`, '')
+      if (reason === null) return
+      if (!reason.trim()) {
+        alert('请输入调整原因')
+        return
+      }
+      adjustmentReason = reason.trim()
+    }
+
     if (status === '已定稿') {
       const notReadySchemes: { name: string; issues: string[] }[] = []
       toUpdate.forEach(id => {
@@ -481,12 +492,14 @@ class App {
         if (notReadySchemes.length > 5) {
           confirmMsg += `... 还有 ${notReadySchemes.length - 5} 个方案存在问题\n`
         }
-        confirmMsg += `\n是否仍要将全部 ${toUpdate.length} 个方案强制标记为「已定稿」？`
+        confirmMsg += `\n是否仍要将全部 ${toUpdate.length} 个方案强制标记为「已定稿」？\n\n确定后将自动生成定稿摘要和评审记录。`
 
         if (!confirm(confirmMsg)) return
       } else {
-        if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
+        if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？\n\n确定后将自动生成定稿摘要和评审记录。`)) return
       }
+    } else if (status === '需调整') {
+      if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？\n\n调整原因：${adjustmentReason}`)) return
     } else {
       if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
     }
@@ -494,13 +507,40 @@ class App {
     const toUpdateSet = new Set(toUpdate)
     this.schemes = this.schemes.map(s => {
       if (toUpdateSet.has(s.id)) {
-        const newFieldChange = this.generateFieldChange(s.id, 'status', s.status, status, '批量操作')
-        return {
-          ...s,
+        const statusBefore = s.status
+        const newFieldChange = this.generateFieldChange(s.id, 'status', statusBefore, status, '批量操作', adjustmentReason || undefined)
+
+        let updates: Partial<PatternScheme> = {
           status,
           updatedAt: Date.now(),
           fieldChanges: [...s.fieldChanges, newFieldChange]
         }
+
+        if (status === '需调整' && statusBefore !== '需调整') {
+          const newReason: AdjustmentReason = {
+            id: generateId(),
+            createdAt: Date.now(),
+            content: adjustmentReason
+          }
+          updates.adjustmentReasons = [...s.adjustmentReasons, newReason]
+        }
+
+        if (status === '已定稿' && statusBefore !== '已定稿') {
+          const summary = this.autoGenerateSummary(s)
+          const reviewRecord: ReviewRecord = {
+            id: generateId(),
+            timestamp: Date.now(),
+            conclusion: '通过',
+            reviewer: '批量操作',
+            comment: '批量标记为已定稿状态，自动生成定稿摘要。',
+            statusBefore,
+            statusAfter: '已定稿'
+          }
+          updates.finalizedSummary = summary
+          updates.reviewRecords = [...s.reviewRecords, reviewRecord]
+        }
+
+        return { ...s, ...updates }
       }
       return s
     })
@@ -1570,7 +1610,7 @@ class App {
         </div>
 
         <div class="detail-section">
-          <div class="detail-section-title">📋 已定稿可执行方案明细</div>
+          <div class="detail-section-title">📋 已定稿方案明细（共 ${summary.allFinalizedSchemes.length} 个，可执行 ${summary.executableSchemes.length} 个）</div>
           <table class="finalized-table">
             <thead>
               <tr>
@@ -1583,11 +1623,20 @@ class App {
                 <th>罩面</th>
                 <th>时长</th>
                 <th>适合人群</th>
+                <th>执行状态</th>
               </tr>
             </thead>
             <tbody>
-              ${summary.executableSchemes.length > 0 ? summary.executableSchemes.map((s, i) => `
-                <tr>
+              ${summary.allFinalizedSchemes.length > 0 ? summary.allFinalizedSchemes.map((s, i) => {
+                const readiness = getSchemeReadiness(s)
+                const isExecutable = readiness.isReadyForFinal
+                const excluded = summary.excludedSchemes.find(e => e.name === s.name)
+                const warningTitle = excluded ? excluded.reasons.join('; ') : ''
+                const statusHtml = isExecutable
+                  ? '<span class="mini-tag success">✅ 可执行</span>'
+                  : '<span class="mini-tag warning" title="' + warningTitle + '">⚠ 有警告</span>'
+                return `
+                <tr style="${!isExecutable ? 'background: #FFFAF0; opacity: 0.9' : ''}">
                   <td>${i + 1}</td>
                   <td><strong>${this.escapeHtml(s.name)}</strong></td>
                   <td>${s.boxType}</td>
@@ -1597,10 +1646,12 @@ class App {
                   <td>${s.coatingCount ?? '-'}次</td>
                   <td>${s.durationHours}h</td>
                   <td>${this.escapeHtml(s.targetAudience) || '-'}</td>
+                  <td>${statusHtml}</td>
                 </tr>
-              `).join('') : `
+              `
+              }).join('') : `
                 <tr>
-                  <td colspan="9" style="text-align:center; color:var(--text-muted); padding:20px">暂无可执行的已定稿方案</td>
+                  <td colspan="10" style="text-align:center; color:var(--text-muted); padding:20px">暂无已定稿方案</td>
                 </tr>
               `}
             </tbody>
@@ -1608,8 +1659,8 @@ class App {
         </div>
 
         ${summary.excludedSchemes.length > 0 ? `
-          <div class="detail-section" style="background: #FFF5F5; border: 1px solid #FFD6D6">
-            <div class="detail-section-title" style="color: #C82506">⚠ 已排除的不可执行方案（${summary.excludedSchemes.length} 个）</div>
+          <div class="detail-section" style="background: #FFF8F0; border: 1px solid #FFE0B8">
+            <div class="detail-section-title" style="color: #C82506">⚠ 存在执行警告的方案（${summary.excludedSchemes.length} 个）</div>
             ${summary.excludedSchemes.map(item => `
               <div style="padding: 8px 0; border-bottom: 1px dashed #FFD6D6; font-size: 13px">
                 <div style="font-weight: 500; margin-bottom: 4px">${this.escapeHtml(item.name)}</div>
@@ -1626,7 +1677,7 @@ class App {
 
   private renderFinalizedModal(): string {
     const summary = generateMaterialSummary(this.schemes)
-    const executableSchemes = summary.executableSchemes
+    const allFinalizedSchemes = summary.allFinalizedSchemes
 
     return `
       <div class="finalized-overlay" id="finalized-overlay">
@@ -1710,7 +1761,7 @@ class App {
             </div>
 
             <div class="finalized-section">
-              <div class="finalized-section-title">📋 方案明细</div>
+              <div class="finalized-section-title">📋 方案明细（共 ${allFinalizedSchemes.length} 个，可执行 ${summary.executableSchemes.length} 个）</div>
               <table class="finalized-table">
                 <thead>
                   <tr>
@@ -1723,11 +1774,20 @@ class App {
                     <th>罩面</th>
                     <th>时长</th>
                     <th>适合人群</th>
+                    <th>执行状态</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${executableSchemes.length > 0 ? executableSchemes.map((s, i) => `
-                    <tr>
+                  ${allFinalizedSchemes.length > 0 ? allFinalizedSchemes.map((s, i) => {
+                    const readiness = getSchemeReadiness(s)
+                    const isExecutable = readiness.isReadyForFinal
+                    const excluded = summary.excludedSchemes.find(e => e.name === s.name)
+                    const warningTitle = excluded ? excluded.reasons.join('; ') : ''
+                    const statusHtml = isExecutable
+                      ? '<span class="mini-tag success">✅ 可执行</span>'
+                      : '<span class="mini-tag warning" title="' + warningTitle + '">⚠ 有警告</span>'
+                    return `
+                    <tr style="${!isExecutable ? 'background: #FFFAF0; opacity: 0.9' : ''}">
                       <td>${i + 1}</td>
                       <td><strong>${this.escapeHtml(s.name)}</strong></td>
                       <td>${s.boxType}</td>
@@ -1737,10 +1797,12 @@ class App {
                       <td>${s.coatingCount ?? '-'}次</td>
                       <td>${s.durationHours}h</td>
                       <td>${this.escapeHtml(s.targetAudience) || '-'}</td>
+                      <td>${statusHtml}</td>
                     </tr>
-                  `).join('') : `
+                  `
+                  }).join('') : `
                     <tr>
-                      <td colspan="9" style="text-align:center; color:var(--text-muted); padding:20px">暂无可执行的已定稿方案</td>
+                      <td colspan="10" style="text-align:center; color:var(--text-muted); padding:20px">暂无已定稿方案</td>
                     </tr>
                   `}
                 </tbody>
@@ -1748,8 +1810,8 @@ class App {
             </div>
 
             ${summary.excludedSchemes.length > 0 ? `
-              <div class="finalized-section" style="background: #FFF5F5; border: 1px solid #FFD6D6">
-                <div class="finalized-section-title" style="color: #C82506">⚠ 已排除的不可执行方案（${summary.excludedSchemes.length} 个）</div>
+              <div class="finalized-section" style="background: #FFF8F0; border: 1px solid #FFE0B8">
+                <div class="finalized-section-title" style="color: #C82506">⚠ 存在执行警告的方案（${summary.excludedSchemes.length} 个）</div>
                 ${summary.excludedSchemes.map(item => `
                   <div style="padding: 8px 0; border-bottom: 1px dashed #FFD6D6; font-size: 13px">
                     <div style="font-weight: 500; margin-bottom: 4px">${this.escapeHtml(item.name)}</div>
@@ -2039,28 +2101,101 @@ class App {
             return
           }
 
-          const reviewRecord: ReviewRecord = {
-            id: generateId(),
-            timestamp: Date.now(),
-            conclusion,
-            reviewer,
-            comment: comment || '',
-            statusBefore: scheme.status,
-            statusAfter: scheme.status
+          let newStatus: SchemeStatus = scheme.status
+          if (conclusion === '通过') {
+            newStatus = '已定稿'
+          } else if (conclusion === '需调整') {
+            newStatus = '需调整'
           }
 
-          const fieldChange = this.generateFieldChange(scheme.id, 'status', scheme.status, scheme.status, reviewer, comment || '添加评审记录')
-
-          const index = this.schemes.findIndex(s => s.id === scheme.id)
-          if (index !== -1) {
-            this.schemes[index] = {
-              ...this.schemes[index],
-              reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
-              fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
-              updatedAt: Date.now()
+          if (newStatus !== scheme.status && newStatus === '需调整') {
+            const reason = prompt('请输入调整原因：', '')
+            if (reason === null) return
+            if (!reason.trim()) {
+              alert('请输入调整原因')
+              return
             }
-            this.save()
-            this.render()
+            const newReason: AdjustmentReason = {
+              id: generateId(),
+              createdAt: Date.now(),
+              content: reason.trim()
+            }
+
+            const statusBefore = scheme.status
+            const reviewRecord: ReviewRecord = {
+              id: generateId(),
+              timestamp: Date.now(),
+              conclusion,
+              reviewer,
+              comment: comment || '',
+              statusBefore,
+              statusAfter: newStatus
+            }
+
+            const fieldChange = this.generateFieldChange(scheme.id, 'status', statusBefore, newStatus, reviewer, reason.trim())
+
+            const index = this.schemes.findIndex(s => s.id === scheme.id)
+            if (index !== -1) {
+              this.schemes[index] = {
+                ...this.schemes[index],
+                status: newStatus,
+                reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+                fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
+                adjustmentReasons: [...this.schemes[index].adjustmentReasons, newReason],
+                updatedAt: Date.now()
+              }
+              this.save()
+              this.render()
+            }
+          } else if (newStatus !== scheme.status && newStatus === '已定稿') {
+            const statusBefore = scheme.status
+            const summary = this.autoGenerateSummary(scheme)
+            const reviewRecord: ReviewRecord = {
+              id: generateId(),
+              timestamp: Date.now(),
+              conclusion,
+              reviewer,
+              comment: comment || '',
+              statusBefore,
+              statusAfter: newStatus
+            }
+
+            const fieldChange = this.generateFieldChange(scheme.id, 'status', statusBefore, newStatus, reviewer, comment || '评审通过，自动定稿')
+
+            const index = this.schemes.findIndex(s => s.id === scheme.id)
+            if (index !== -1) {
+              this.schemes[index] = {
+                ...this.schemes[index],
+                status: newStatus,
+                reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+                fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
+                finalizedSummary: summary,
+                updatedAt: Date.now()
+              }
+              this.save()
+              this.render()
+            }
+          } else {
+            const reviewRecord: ReviewRecord = {
+              id: generateId(),
+              timestamp: Date.now(),
+              conclusion,
+              reviewer,
+              comment: comment || '',
+              statusBefore: scheme.status,
+              statusAfter: scheme.status
+            }
+
+            const index = this.schemes.findIndex(s => s.id === scheme.id)
+            if (index !== -1) {
+              this.schemes[index] = {
+                ...this.schemes[index],
+                reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+                updatedAt: Date.now()
+              }
+              this.save()
+              this.render()
+            }
           }
         })
 
@@ -2201,28 +2336,101 @@ class App {
             return
           }
 
-          const reviewRecord: ReviewRecord = {
-            id: generateId(),
-            timestamp: Date.now(),
-            conclusion,
-            reviewer,
-            comment: comment || '',
-            statusBefore: scheme.status,
-            statusAfter: scheme.status
+          let newStatus: SchemeStatus = scheme.status
+          if (conclusion === '通过') {
+            newStatus = '已定稿'
+          } else if (conclusion === '需调整') {
+            newStatus = '需调整'
           }
 
-          const fieldChange = this.generateFieldChange(scheme.id, 'status', scheme.status, scheme.status, reviewer, comment || '添加评审记录')
-
-          const index = this.schemes.findIndex(s => s.id === scheme.id)
-          if (index !== -1) {
-            this.schemes[index] = {
-              ...this.schemes[index],
-              reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
-              fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
-              updatedAt: Date.now()
+          if (newStatus !== scheme.status && newStatus === '需调整') {
+            const reason = prompt('请输入调整原因：', '')
+            if (reason === null) return
+            if (!reason.trim()) {
+              alert('请输入调整原因')
+              return
             }
-            this.save()
-            this.render()
+            const newReason: AdjustmentReason = {
+              id: generateId(),
+              createdAt: Date.now(),
+              content: reason.trim()
+            }
+
+            const statusBefore = scheme.status
+            const reviewRecord: ReviewRecord = {
+              id: generateId(),
+              timestamp: Date.now(),
+              conclusion,
+              reviewer,
+              comment: comment || '',
+              statusBefore,
+              statusAfter: newStatus
+            }
+
+            const fieldChange = this.generateFieldChange(scheme.id, 'status', statusBefore, newStatus, reviewer, reason.trim())
+
+            const index = this.schemes.findIndex(s => s.id === scheme.id)
+            if (index !== -1) {
+              this.schemes[index] = {
+                ...this.schemes[index],
+                status: newStatus,
+                reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+                fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
+                adjustmentReasons: [...this.schemes[index].adjustmentReasons, newReason],
+                updatedAt: Date.now()
+              }
+              this.save()
+              this.render()
+            }
+          } else if (newStatus !== scheme.status && newStatus === '已定稿') {
+            const statusBefore = scheme.status
+            const summary = this.autoGenerateSummary(scheme)
+            const reviewRecord: ReviewRecord = {
+              id: generateId(),
+              timestamp: Date.now(),
+              conclusion,
+              reviewer,
+              comment: comment || '',
+              statusBefore,
+              statusAfter: newStatus
+            }
+
+            const fieldChange = this.generateFieldChange(scheme.id, 'status', statusBefore, newStatus, reviewer, comment || '评审通过，自动定稿')
+
+            const index = this.schemes.findIndex(s => s.id === scheme.id)
+            if (index !== -1) {
+              this.schemes[index] = {
+                ...this.schemes[index],
+                status: newStatus,
+                reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+                fieldChanges: [...this.schemes[index].fieldChanges, fieldChange],
+                finalizedSummary: summary,
+                updatedAt: Date.now()
+              }
+              this.save()
+              this.render()
+            }
+          } else {
+            const reviewRecord: ReviewRecord = {
+              id: generateId(),
+              timestamp: Date.now(),
+              conclusion,
+              reviewer,
+              comment: comment || '',
+              statusBefore: scheme.status,
+              statusAfter: scheme.status
+            }
+
+            const index = this.schemes.findIndex(s => s.id === scheme.id)
+            if (index !== -1) {
+              this.schemes[index] = {
+                ...this.schemes[index],
+                reviewRecords: [...this.schemes[index].reviewRecords, reviewRecord],
+                updatedAt: Date.now()
+              }
+              this.save()
+              this.render()
+            }
           }
         })
 
