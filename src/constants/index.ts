@@ -1,4 +1,4 @@
-import type { ColorInfo, LineMethod, RiskLevel, SchemeStatus } from '../types'
+import type { ColorInfo, LineMethod, RiskLevel, SchemeStatus, ExecutionStatus, TestResult } from '../types'
 
 export const BOX_TYPES = [
   '方形食盒',
@@ -60,6 +60,23 @@ export const RISK_COLOR_MAP: Record<RiskLevel, string> = {
   '低': '#00A86B',
   '中': '#FFB61E',
   '高': '#C82506'
+}
+
+export const EXECUTION_STATUSES: ExecutionStatus[] = ['待执行', '执行中', '已完成', '需返工']
+
+export const EXECUTION_STATUS_COLOR_MAP: Record<ExecutionStatus, string> = {
+  '待执行': '#6C757D',
+  '执行中': '#17A2B8',
+  '已完成': '#00A86B',
+  '需返工': '#C82506'
+}
+
+export const TEST_RESULTS: TestResult[] = ['通过', '需调整', '待定']
+
+export const TEST_RESULT_COLOR_MAP: Record<TestResult, string> = {
+  '通过': '#00A86B',
+  '需调整': '#C82506',
+  '待定': '#FFB61E'
 }
 
 export const MAX_SCHEMES_PER_BOX = 5

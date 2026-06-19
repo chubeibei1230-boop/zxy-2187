@@ -1,4 +1,4 @@
-import type { PatternScheme, ReviewRecord, FieldChange, AdjustmentReason, AdjustmentProgress } from '../types'
+import type { PatternScheme, ReviewRecord, FieldChange, AdjustmentReason, AdjustmentProgress, ExecutionOrder, TestRecord } from '../types'
 import { COLORS, BOX_TYPES } from '../constants'
 import { generateId } from './storage'
 
@@ -314,4 +314,184 @@ export function createSampleSchemes(): PatternScheme[] {
     adjustmentProgress: createSampleAdjustmentProgress(index),
     finalizedSummary: createFinalizedSummary(index)
   }))
+}
+
+function createSampleTestRecords(orderIndex: number): TestRecord[] {
+  const now = Date.now()
+  if (orderIndex === 0) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 1,
+        result: '通过',
+        executor: '李工艺师',
+        actualHours: 6.5,
+        issues: '试配过程顺利，描金环节注意控制漆层厚度，整体效果符合预期',
+        suggestions: '可直接进入评审定稿流程',
+        statusBefore: '执行中',
+        statusAfter: '已完成'
+      }
+    ]
+  }
+  if (orderIndex === 1) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 2,
+        result: '需调整',
+        executor: '王工艺师',
+        actualHours: 5,
+        issues: '1. 花卉纹样层次表现不足，花瓣过渡略显生硬\n2. 罩面第3遍时局部出现气泡\n3. 黑漆描线边缘不够整齐',
+        suggestions: '1. 增加花瓣层次晕染，使用更细的毛笔勾勒\n2. 罩面时控制环境湿度，薄涂多次\n3. 描线前再次打磨底漆，确保附着力',
+        statusBefore: '执行中',
+        statusAfter: '需返工'
+      },
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 0.5,
+        result: '待定',
+        executor: '张工艺师',
+        actualHours: 3,
+        issues: '正在进行第二次试配，调整了花瓣绘制技法，等待漆层干透后评估效果',
+        suggestions: '待漆层完全干透后（约24小时）进行效果评估',
+        statusBefore: '执行中',
+        statusAfter: '执行中'
+      }
+    ]
+  }
+  if (orderIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        timestamp: now - 86400000 * 3,
+        result: '需调整',
+        executor: '赵工艺师',
+        actualHours: 4,
+        issues: '1. 云纹线条流畅度仍需优化，曲线弧度不够自然\n2. 紫色与藏蓝搭配在光线较暗处层次感不足\n3. 描银工艺附着力不够，有轻微脱落',
+        suggestions: '1. 先用铅笔起稿确定云纹走向，再用漆描绘\n2. 增加少量明黄色点缀提升层次感\n3. 描银前用细砂纸轻磨底漆，增强附着力',
+        statusBefore: '执行中',
+        statusAfter: '需返工'
+      }
+    ]
+  }
+  return []
+}
+
+function createSampleOrderAdjustmentReasons(orderIndex: number): AdjustmentReason[] {
+  if (orderIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        createdAt: Date.now() - 86400000 * 2.5,
+        content: '根据首次试配反馈，需要优化云纹线条流畅度，增加对比色点缀，并改进描银工艺附着力'
+      }
+    ]
+  }
+  return []
+}
+
+function createSampleOrderAdjustmentProgress(orderIndex: number): AdjustmentProgress[] {
+  if (orderIndex === 2) {
+    return [
+      {
+        id: generateId(),
+        timestamp: Date.now() - 86400000 * 2,
+        content: '已重新起稿云纹图案，优化曲线弧度',
+        operator: '李工艺'
+      },
+      {
+        id: generateId(),
+        timestamp: Date.now() - 86400000 * 1.5,
+        content: '在紫色纹样边缘增加明黄色细边点缀，提升层次感',
+        operator: '李工艺'
+      },
+      {
+        id: generateId(),
+        timestamp: Date.now() - 86400000 * 0.8,
+        content: '改进描银工艺，增加底漆打磨工序，准备二次试配',
+        operator: '李工艺'
+      }
+    ]
+  }
+  if (orderIndex === 1) {
+    return [
+      {
+        id: generateId(),
+        timestamp: Date.now() - 86400000 * 1,
+        content: '已调整花瓣绘制技法，增加晕染层次',
+        operator: '王工艺'
+      }
+    ]
+  }
+  return []
+}
+
+export function createSampleExecutionOrders(schemes: PatternScheme[]): ExecutionOrder[] {
+  const now = Date.now()
+  const orders: ExecutionOrder[] = []
+
+  const targetSchemes = schemes.filter(s => s.status === '待试配' || s.status === '需调整' || s.status === '已定稿')
+
+  targetSchemes.forEach((scheme, index) => {
+    let status: ExecutionOrder['status'] = '待执行'
+    let startedAt: number | null = null
+    let completedAt: number | null = null
+    let currentExecutor: string | null = null
+    let totalActualHours = 0
+    let missingInfo: string[] = []
+
+    if (index === 0) {
+      status = '已完成'
+      startedAt = now - 86400000 * 2
+      completedAt = now - 86400000 * 1
+      totalActualHours = 6.5
+    } else if (index === 1) {
+      status = '执行中'
+      startedAt = now - 86400000 * 0.3
+      currentExecutor = '张工艺师'
+      totalActualHours = 8
+    } else if (index === 2) {
+      status = '需返工'
+      startedAt = now - 86400000 * 3
+      totalActualHours = 4
+    } else if (index === 3) {
+      status = '待执行'
+      if (scheme.coatingCount === null) missingInfo.push('罩面次数未填写')
+      if (scheme.operationReminder.trim() === '') missingInfo.push('操作提醒未填写')
+    }
+
+    const testRecords = createSampleTestRecords(index)
+    const adjustmentReasons = createSampleOrderAdjustmentReasons(index)
+    const adjustmentProgress = createSampleOrderAdjustmentProgress(index)
+
+    orders.push({
+      id: generateId(),
+      schemeId: scheme.id,
+      schemeName: scheme.name,
+      status,
+      boxType: scheme.boxType,
+      mainColor: scheme.mainColor,
+      secondaryColor: scheme.secondaryColor,
+      lineMethod: scheme.lineMethod,
+      coatingCount: scheme.coatingCount,
+      durationHours: scheme.durationHours,
+      targetAudience: scheme.targetAudience,
+      operationReminder: scheme.operationReminder,
+      stepNotes: scheme.stepNotes.map(s => ({ ...s })),
+      riskLevel: scheme.riskLevel,
+      colorDescription: scheme.colorDescription,
+      createdAt: now - 86400000 * (index + 1),
+      updatedAt: now - 86400000 * (index === 0 ? 1 : 0.5),
+      startedAt,
+      completedAt,
+      testRecords,
+      missingInfo,
+      adjustmentReasons,
+      adjustmentProgress,
+      currentExecutor,
+      totalActualHours
+    })
+  })
+
+  return orders
 }

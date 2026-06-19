@@ -11,11 +11,16 @@ import type {
   AdjustmentProgress,
   FinalizedSummary,
   ReviewConclusion,
-  ChangeField
+  ChangeField,
+  ExecutionOrder,
+  ExecutionStatus,
+  TestRecord,
+  TestResult
 } from '../types'
-import { BOX_TYPES, COLORS, LINE_METHODS, STATUSES, RISK_LEVELS } from '../constants'
+import { BOX_TYPES, COLORS, LINE_METHODS, STATUSES, RISK_LEVELS, EXECUTION_STATUSES, TEST_RESULTS } from '../constants'
 
 const STORAGE_KEY = 'lacquer_pattern_schemes'
+const EXECUTION_STORAGE_KEY = 'lacquer_execution_orders'
 
 const REVIEW_CONCLUSIONS: ReviewConclusion[] = ['通过', '需调整', '待定', '驳回']
 const CHANGE_FIELDS: ChangeField[] = [
@@ -368,4 +373,112 @@ export function importFromJson(file: File): Promise<{ schemes: PatternScheme[]; 
     reader.onerror = () => reject(new Error('文件读取失败'))
     reader.readAsText(file)
   })
+}
+
+function isValidTestRecord(obj: unknown): obj is TestRecord {
+  if (!obj || typeof obj !== 'object') return false
+  const t = obj as Record<string, unknown>
+  return (
+    typeof t.id === 'string' &&
+    typeof t.timestamp === 'number' &&
+    isInArray(t.result, TEST_RESULTS) &&
+    typeof t.executor === 'string' &&
+    (t.actualHours === null || typeof t.actualHours === 'number') &&
+    typeof t.issues === 'string' &&
+    typeof t.suggestions === 'string' &&
+    isInArray(t.statusBefore, EXECUTION_STATUSES) &&
+    isInArray(t.statusAfter, EXECUTION_STATUSES)
+  )
+}
+
+function validateTestRecords(arr: unknown): TestRecord[] {
+  if (!Array.isArray(arr)) return []
+  return arr.filter(isValidTestRecord)
+}
+
+function validateExecutionOrder(obj: unknown, index: number): ExecutionOrder {
+  const o = (obj || {}) as Record<string, unknown>
+  const now = Date.now()
+
+  const schemeId = typeof o.schemeId === 'string' ? o.schemeId : ''
+  const schemeName = typeof o.schemeName === 'string' ? o.schemeName : `执行单${index + 1}`
+  const status: ExecutionStatus = isInArray(o.status, EXECUTION_STATUSES) ? o.status : '待执行'
+  const boxType = isInArray(o.boxType, BOX_TYPES) ? o.boxType : BOX_TYPES[0]
+  const mainColor = isValidColorInfo(o.mainColor) ? o.mainColor : COLORS[0]
+  const secondaryColor = isValidColorInfo(o.secondaryColor) ? o.secondaryColor : COLORS[3]
+  const lineMethod = isInArray(o.lineMethod, LINE_METHODS) ? o.lineMethod : '描金'
+  const coatingCount = typeof o.coatingCount === 'number' && o.coatingCount >= 0 ? o.coatingCount : null
+  const durationHours = typeof o.durationHours === 'number' && o.durationHours >= 0 ? o.durationHours : 4
+  const targetAudience = typeof o.targetAudience === 'string' ? o.targetAudience : ''
+  const operationReminder = typeof o.operationReminder === 'string' ? o.operationReminder : ''
+  const colorDescription = typeof o.colorDescription === 'string' ? o.colorDescription : ''
+  const riskLevel = isInArray(o.riskLevel, RISK_LEVELS) ? o.riskLevel : '中'
+
+  let stepNotes: StepNote[] = [{ step: 1, title: '制胎', note: '' }]
+  if (Array.isArray(o.stepNotes) && o.stepNotes.length > 0) {
+    stepNotes = o.stepNotes
+      .map((s, i) => {
+        if (isValidStepNote(s)) return s
+        return { step: i + 1, title: `步骤${i + 1}`, note: '' }
+      })
+      .filter((s): s is StepNote => s !== null)
+  }
+
+  const testRecords = validateTestRecords(o.testRecords)
+  const missingInfo = Array.isArray(o.missingInfo) && o.missingInfo.every(m => typeof m === 'string') ? o.missingInfo : []
+  const adjustmentReasons = validateAdjustmentReasons(o.adjustmentReasons, schemeName, [])
+  const adjustmentProgress = validateAdjustmentProgress(o.adjustmentProgress, schemeName, [])
+  const currentExecutor = typeof o.currentExecutor === 'string' ? o.currentExecutor : null
+  const totalActualHours = typeof o.totalActualHours === 'number' && o.totalActualHours >= 0 ? o.totalActualHours : 0
+
+  return {
+    id: typeof o.id === 'string' && o.id ? o.id : generateId(),
+    schemeId,
+    schemeName,
+    status,
+    boxType,
+    mainColor,
+    secondaryColor,
+    lineMethod,
+    coatingCount,
+    durationHours,
+    targetAudience,
+    operationReminder,
+    stepNotes,
+    riskLevel,
+    colorDescription,
+    createdAt: typeof o.createdAt === 'number' && o.createdAt > 0 ? o.createdAt : now,
+    updatedAt: typeof o.updatedAt === 'number' && o.updatedAt > 0 ? o.updatedAt : now,
+    startedAt: typeof o.startedAt === 'number' && o.startedAt > 0 ? o.startedAt : null,
+    completedAt: typeof o.completedAt === 'number' && o.completedAt > 0 ? o.completedAt : null,
+    testRecords,
+    missingInfo,
+    adjustmentReasons,
+    adjustmentProgress,
+    currentExecutor,
+    totalActualHours
+  }
+}
+
+export function loadExecutionOrders(): ExecutionOrder[] {
+  try {
+    const data = sessionStorage.getItem(EXECUTION_STORAGE_KEY)
+    if (data) {
+      const parsed = JSON.parse(data)
+      if (Array.isArray(parsed)) {
+        return parsed.map((item, i) => validateExecutionOrder(item, i))
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load execution orders from storage:', e)
+  }
+  return []
+}
+
+export function saveExecutionOrders(orders: ExecutionOrder[]): void {
+  try {
+    sessionStorage.setItem(EXECUTION_STORAGE_KEY, JSON.stringify(orders))
+  } catch (e) {
+    console.error('Failed to save execution orders to storage:', e)
+  }
 }

@@ -1,7 +1,7 @@
-import type { PatternScheme, MaterialSummary } from '../types'
+import type { PatternScheme, MaterialSummary, ExecutionOrder } from '../types'
 import { checkSingleScheme, getSchemeReadiness } from './checker'
 
-export function generateMaterialSummary(schemes: PatternScheme[]): {
+export function generateMaterialSummary(schemes: PatternScheme[], executionOrders: ExecutionOrder[] = []): {
   mainColors: MaterialSummary[]
   secondaryColors: MaterialSummary[]
   lineMethods: { method: string; count: number }[]
@@ -12,7 +12,14 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
   allFinalizedSchemes: PatternScheme[]
   excludedSchemes: { name: string; reasons: string[] }[]
 } {
-  const allFinalizedSchemes = schemes.filter(s => s.status === '已定稿')
+  const completedExecutionSchemeIds = new Set(
+    executionOrders.filter(e => e.status === '已完成').map(e => e.schemeId)
+  )
+
+  const allFinalizedSchemes = schemes.filter(s => 
+    s.status === '已定稿' && completedExecutionSchemeIds.has(s.id)
+  )
+
   const finalizedSchemes = allFinalizedSchemes.filter(s => {
     const readiness = getSchemeReadiness(s)
     return readiness.isReadyForFinal
@@ -23,6 +30,8 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
     .map(s => {
       const readiness = getSchemeReadiness(s)
       const reasons: string[] = []
+      const hasCompletedExecution = completedExecutionSchemeIds.has(s.id)
+      if (!hasCompletedExecution) reasons.push('执行单尚未完成')
       if (readiness.blockingReasons.length > 0) reasons.push(...readiness.blockingReasons)
       if (readiness.hasMissingInfo) reasons.push('存在缺失的必填信息')
       if (readiness.hasDurationOverflow) reasons.push(`预计时长 ${s.durationHours}h 超出建议上限`)
@@ -41,7 +50,7 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
   const boxTypeMap = new Map<string, number>()
   let totalHours = 0
 
-  allFinalizedSchemes.forEach(scheme => {
+  finalizedSchemes.forEach(scheme => {
     const mc = scheme.mainColor.name
     if (!mainColorMap.has(mc)) {
       mainColorMap.set(mc, { count: 0, boxTypes: new Set() })
@@ -86,7 +95,7 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
     mainColors,
     secondaryColors,
     lineMethods,
-    totalSchemes: allFinalizedSchemes.length,
+    totalSchemes: finalizedSchemes.length,
     totalHours,
     boxTypeSummary,
     executableSchemes: finalizedSchemes,

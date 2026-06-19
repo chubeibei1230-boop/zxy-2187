@@ -6,9 +6,15 @@ export type LineMethod = '描金' | '描银' | '黑漆描线' | '色漆描线' |
 
 export type WorkbenchView = 'all' | 'priority'
 
-export type WorkbenchTab = 'list' | 'summary'
+export type WorkbenchTab = 'list' | 'summary' | 'execution'
 
 export type ReviewConclusion = '通过' | '需调整' | '待定' | '驳回'
+
+export type ExecutionStatus = '待执行' | '执行中' | '已完成' | '需返工'
+
+export type TestResult = '通过' | '需调整' | '待定'
+
+export type ExecutionQuadrant = 'pending' | 'inProgress' | 'completed' | 'rework'
 
 export type ChangeField =
   | 'name'
@@ -153,4 +159,51 @@ export interface SchemeReadiness {
   hasColorConflict: boolean
   hasInsufficientAdjustment: boolean
   priorityScore: number
+}
+
+export interface TestRecord {
+  id: string
+  timestamp: number
+  result: TestResult
+  executor: string
+  actualHours: number | null
+  issues: string
+  suggestions: string
+  statusBefore: ExecutionStatus
+  statusAfter: ExecutionStatus
+}
+
+export interface ExecutionOrder {
+  id: string
+  schemeId: string
+  schemeName: string
+  status: ExecutionStatus
+  boxType: string
+  mainColor: ColorInfo
+  secondaryColor: ColorInfo
+  lineMethod: LineMethod
+  coatingCount: number | null
+  durationHours: number
+  targetAudience: string
+  operationReminder: string
+  stepNotes: StepNote[]
+  riskLevel: RiskLevel
+  colorDescription: string
+  createdAt: number
+  updatedAt: number
+  startedAt: number | null
+  completedAt: number | null
+  testRecords: TestRecord[]
+  missingInfo: string[]
+  adjustmentReasons: AdjustmentReason[]
+  adjustmentProgress: AdjustmentProgress[]
+  currentExecutor: string | null
+  totalActualHours: number
+}
+
+export interface ExecutionFilterOptions {
+  boxType: string
+  riskLevel: RiskLevel | ''
+  status: ExecutionStatus | ''
+  executor: string
 }

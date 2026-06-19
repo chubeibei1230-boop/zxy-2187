@@ -15,7 +15,12 @@ import type {
   AdjustmentProgress,
   FinalizedSummary,
   ReviewConclusion,
-  ChangeField
+  ChangeField,
+  ExecutionOrder,
+  ExecutionStatus,
+  TestResult,
+  ExecutionFilterOptions,
+  TestRecord
 } from './types'
 import {
   CHANGE_FIELD_LABELS
@@ -28,9 +33,13 @@ import {
   RISK_LEVELS,
   STATUS_COLOR_MAP,
   RISK_COLOR_MAP,
+  EXECUTION_STATUSES,
+  EXECUTION_STATUS_COLOR_MAP,
+  TEST_RESULTS,
+  TEST_RESULT_COLOR_MAP,
   MAX_ACTIVITY_DURATION
 } from './constants'
-import { loadSchemes, saveSchemes, generateId, exportToJson, importFromJson } from './utils/storage'
+import { loadSchemes, saveSchemes, generateId, exportToJson, importFromJson, loadExecutionOrders, saveExecutionOrders } from './utils/storage'
 import {
   checkAllSchemes,
   checkSingleScheme,
@@ -40,7 +49,7 @@ import {
 } from './utils/checker'
 import { filterSchemes, sortSchemes } from './utils/filter'
 import { generateMaterialSummary } from './utils/material'
-import { createSampleSchemes } from './utils/sampleData'
+import { createSampleSchemes, createSampleExecutionOrders } from './utils/sampleData'
 
 type AppView = 'manager' | 'workbench'
 
@@ -82,6 +91,16 @@ class App {
 
   private summaryTabManager: Record<string, 'manager' | 'workbench'> = {}
 
+  private executionOrders: ExecutionOrder[] = []
+  private selectedExecutionId: string | null = null
+  private executionFilters: ExecutionFilterOptions = {
+    boxType: '',
+    riskLevel: '',
+    status: '',
+    executor: ''
+  }
+  private executionQuadrant: 'all' | ExecutionStatus = 'all'
+
   private appElement: HTMLElement
 
   constructor() {
@@ -105,9 +124,21 @@ class App {
       this.save()
     }
 
+    const storedOrders = loadExecutionOrders()
+    if (storedOrders.length > 0) {
+      this.executionOrders = storedOrders
+    } else {
+      this.executionOrders = createSampleExecutionOrders(this.schemes)
+      this.saveExecution()
+    }
+
     if (this.schemes.length > 0) {
       this.selectedId = this.schemes[0].id
       this.workbenchSelectedId = this.schemes[0].id
+    }
+
+    if (this.executionOrders.length > 0) {
+      this.selectedExecutionId = this.executionOrders[0].id
     }
 
     this.render()
@@ -115,6 +146,265 @@ class App {
 
   private save(): void {
     saveSchemes(this.schemes)
+  }
+
+  private saveExecution(): void {
+    saveExecutionOrders(this.executionOrders)
+  }
+
+  private getSelectedExecution(): ExecutionOrder | undefined {
+    return this.executionOrders.find(e => e.id === this.selectedExecutionId)
+  }
+
+  private detectMissingInfo(scheme: PatternScheme): string[] {
+    const missing: string[] = []
+    if (scheme.coatingCount === null) missing.push('罩面次数未填写')
+    if (!scheme.targetAudience.trim()) missing.push('适合人群未填写')
+    if (!scheme.operationReminder.trim()) missing.push('操作提醒未填写')
+    if (!scheme.colorDescription.trim()) missing.push('配色说明未填写')
+    if (scheme.stepNotes.some(s => !s.title.trim() || !s.note.trim())) missing.push('存在步骤信息不完整')
+    return missing
+  }
+
+  private createExecutionOrderFromScheme(schemeId: string): ExecutionOrder | null {
+    const scheme = this.schemes.find(s => s.id === schemeId)
+    if (!scheme) return null
+
+    if (scheme.status !== '待试配' && scheme.status !== '需调整') {
+      alert('只有「待试配」或「需调整」状态的方案才能生成执行单')
+      return null
+    }
+
+    const existing = this.executionOrders.find(e => e.schemeId === schemeId && (e.status === '待执行' || e.status === '执行中' || e.status === '需返工'))
+    if (existing) {
+      alert('该方案已有未完成的执行单，请先完成或关闭现有执行单')
+      return null
+    }
+
+    const missingInfo = this.detectMissingInfo(scheme)
+
+    const order: ExecutionOrder = {
+      id: generateId(),
+      schemeId: scheme.id,
+      schemeName: scheme.name,
+      status: '待执行',
+      boxType: scheme.boxType,
+      mainColor: scheme.mainColor,
+      secondaryColor: scheme.secondaryColor,
+      lineMethod: scheme.lineMethod,
+      coatingCount: scheme.coatingCount,
+      durationHours: scheme.durationHours,
+      targetAudience: scheme.targetAudience,
+      operationReminder: scheme.operationReminder,
+      stepNotes: scheme.stepNotes.map(s => ({ ...s })),
+      riskLevel: scheme.riskLevel,
+      colorDescription: scheme.colorDescription,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      startedAt: null,
+      completedAt: null,
+      testRecords: [],
+      missingInfo,
+      adjustmentReasons: [...scheme.adjustmentReasons],
+      adjustmentProgress: [...scheme.adjustmentProgress],
+      currentExecutor: null,
+      totalActualHours: 0
+    }
+
+    this.executionOrders.unshift(order)
+    this.selectedExecutionId = order.id
+    this.saveExecution()
+    this.render()
+    return order
+  }
+
+  private startExecution(orderId: string, executor: string): boolean {
+    const index = this.executionOrders.findIndex(e => e.id === orderId)
+    if (index === -1) return false
+
+    const order = this.executionOrders[index]
+    if (order.status !== '待执行' && order.status !== '需返工') {
+      alert('只有「待执行」或「需返工」状态的执行单可以开始执行')
+      return false
+    }
+
+    if (!executor.trim()) {
+      alert('请输入执行人姓名')
+      return false
+    }
+
+    this.executionOrders[index] = {
+      ...order,
+      status: '执行中',
+      startedAt: order.startedAt || Date.now(),
+      currentExecutor: executor.trim(),
+      updatedAt: Date.now()
+    }
+    this.saveExecution()
+    this.render()
+    return true
+  }
+
+  private recordTestResult(orderId: string, result: TestResult, executor: string, actualHours: number | null, issues: string, suggestions: string): boolean {
+    const index = this.executionOrders.findIndex(e => e.id === orderId)
+    if (index === -1) return false
+
+    const order = this.executionOrders[index]
+    if (order.status !== '执行中') {
+      alert('只有「执行中」状态的执行单可以记录试配结果')
+      return false
+    }
+
+    let newStatus: ExecutionStatus = order.status
+    if (result === '通过') {
+      newStatus = '已完成'
+    } else if (result === '需调整') {
+      newStatus = '需返工'
+    }
+
+    const record: TestRecord = {
+      id: generateId(),
+      timestamp: Date.now(),
+      result,
+      executor: executor.trim(),
+      actualHours,
+      issues,
+      suggestions,
+      statusBefore: order.status,
+      statusAfter: newStatus
+    }
+
+    const updatedOrder: ExecutionOrder = {
+      ...order,
+      status: newStatus,
+      completedAt: newStatus === '已完成' ? Date.now() : order.completedAt,
+      currentExecutor: newStatus === '已完成' ? null : order.currentExecutor,
+      testRecords: [...order.testRecords, record],
+      totalActualHours: order.totalActualHours + (actualHours || 0),
+      updatedAt: Date.now()
+    }
+
+    if (result === '需调整') {
+      if (suggestions.trim()) {
+        const newReason: AdjustmentReason = {
+          id: generateId(),
+          createdAt: Date.now(),
+          content: suggestions.trim()
+        }
+        updatedOrder.adjustmentReasons = [...updatedOrder.adjustmentReasons, newReason]
+      }
+    }
+
+    this.executionOrders[index] = updatedOrder
+
+    if (result === '通过') {
+      const schemeIndex = this.schemes.findIndex(s => s.id === order.schemeId)
+      if (schemeIndex !== -1) {
+        const scheme = this.schemes[schemeIndex]
+        const readiness = getSchemeReadiness(scheme)
+        if (readiness.isReadyForFinal) {
+          const summary = this.autoGenerateSummary(scheme)
+          const reviewRecord: ReviewRecord = {
+            id: generateId(),
+            timestamp: Date.now(),
+            conclusion: '通过',
+            reviewer: executor.trim() || '试配执行',
+            comment: `试配通过，执行人：${executor.trim() || '未填写'}，实际耗时：${actualHours !== null ? actualHours + ' 小时' : '未记录'}。${issues.trim() ? `试配备注：${issues}` : ''}`,
+            statusBefore: scheme.status,
+            statusAfter: '已定稿'
+          }
+          this.schemes[schemeIndex] = {
+            ...scheme,
+            status: '已定稿',
+            finalizedSummary: summary,
+            reviewRecords: [...scheme.reviewRecords, reviewRecord],
+            updatedAt: Date.now()
+          }
+          this.save()
+        }
+      }
+    } else if (result === '需调整') {
+      const schemeIndex = this.schemes.findIndex(s => s.id === order.schemeId)
+      if (schemeIndex !== -1) {
+        const scheme = this.schemes[schemeIndex]
+        if (scheme.status !== '需调整') {
+          const newReason: AdjustmentReason = {
+            id: generateId(),
+            createdAt: Date.now(),
+            content: suggestions.trim() || '试配结果为需调整，请根据建议进行改进'
+          }
+          this.schemes[schemeIndex] = {
+            ...scheme,
+            status: '需调整',
+            adjustmentReasons: [...scheme.adjustmentReasons, newReason],
+            updatedAt: Date.now()
+          }
+          this.save()
+        }
+      }
+    }
+
+    this.saveExecution()
+    this.render()
+    return true
+  }
+
+  private addExecutionProgress(orderId: string, content: string, operator: string): boolean {
+    const index = this.executionOrders.findIndex(e => e.id === orderId)
+    if (index === -1) return false
+    if (!content.trim() || !operator.trim()) {
+      alert('请填写完整的进展信息')
+      return false
+    }
+
+    const progress: AdjustmentProgress = {
+      id: generateId(),
+      timestamp: Date.now(),
+      content: content.trim(),
+      operator: operator.trim()
+    }
+
+    this.executionOrders[index] = {
+      ...this.executionOrders[index],
+      adjustmentProgress: [...this.executionOrders[index].adjustmentProgress, progress],
+      updatedAt: Date.now()
+    }
+
+    const schemeIndex = this.schemes.findIndex(s => s.id === this.executionOrders[index].schemeId)
+    if (schemeIndex !== -1) {
+      this.schemes[schemeIndex] = {
+        ...this.schemes[schemeIndex],
+        adjustmentProgress: [...this.schemes[schemeIndex].adjustmentProgress, progress],
+        updatedAt: Date.now()
+      }
+      this.save()
+    }
+
+    this.saveExecution()
+    this.render()
+    return true
+  }
+
+  private getFilteredExecutionOrders(): ExecutionOrder[] {
+    let result = this.executionOrders.filter(order => {
+      if (this.executionQuadrant !== 'all' && order.status !== this.executionQuadrant) return false
+      if (this.executionFilters.boxType && order.boxType !== this.executionFilters.boxType) return false
+      if (this.executionFilters.riskLevel && order.riskLevel !== this.executionFilters.riskLevel) return false
+      if (this.executionFilters.status && order.status !== this.executionFilters.status) return false
+      if (this.executionFilters.executor && !order.currentExecutor?.includes(this.executionFilters.executor)) {
+        const hasExecutorInRecords = order.testRecords.some(r => r.executor.includes(this.executionFilters.executor!))
+        if (!hasExecutorInRecords) return false
+      }
+      return true
+    })
+
+    result = [...result].sort((a, b) => {
+      const statusOrder: Record<ExecutionStatus, number> = { '执行中': 0, '待执行': 1, '需返工': 2, '已完成': 3 }
+      if (statusOrder[a.status] !== statusOrder[b.status]) return statusOrder[a.status] - statusOrder[b.status]
+      return b.updatedAt - a.updatedAt
+    })
+
+    return result
   }
 
   private getSelectedScheme(): PatternScheme | undefined {
@@ -1174,12 +1464,16 @@ class App {
         <button class="workbench-tab ${this.workbenchTab === 'list' ? 'active' : ''}" data-wb-tab="list">
           📋 方案评审
         </button>
+        <button class="workbench-tab ${this.workbenchTab === 'execution' ? 'active' : ''}" data-wb-tab="execution">
+          🔧 试配执行单
+          ${this.executionOrders.filter(e => e.status === '执行中' || e.status === '待执行' || e.status === '需返工').length > 0 ? `<span class="wb-priority-badge">${this.executionOrders.filter(e => e.status === '执行中' || e.status === '待执行' || e.status === '需返工').length}</span>` : ''}
+        </button>
         <button class="workbench-tab ${this.workbenchTab === 'summary' ? 'active' : ''}" data-wb-tab="summary">
           📊 定稿汇总
         </button>
       </div>
 
-      ${this.workbenchTab === 'list' ? this.renderWorkbenchList(filtered) : this.renderWorkbenchSummary()}
+      ${this.workbenchTab === 'list' ? this.renderWorkbenchList(filtered) : this.workbenchTab === 'execution' ? this.renderExecutionView() : this.renderWorkbenchSummary()}
     `
   }
 
@@ -1341,6 +1635,12 @@ class App {
         </div>
         <div class="detail-actions">
           <button class="btn btn-sm" id="wb-btn-duplicate">复制</button>
+          ${(scheme.status === '待试配' || scheme.status === '需调整') ? `
+            <button class="btn btn-sm btn-primary" id="wb-btn-create-execution" 
+              ${this.executionOrders.some(e => e.schemeId === scheme.id) ? '' : ''}>
+              ${this.executionOrders.some(e => e.schemeId === scheme.id) ? '🔄 重新生成执行单' : '📋 生成执行单'}
+            </button>
+          ` : ''}
           <button class="btn btn-sm" id="wb-btn-delete" style="color:#C82506; border-color:#E8B0B0">删除</button>
         </div>
       </div>
@@ -1513,7 +1813,7 @@ class App {
   }
 
   private renderWorkbenchSummary(): string {
-    const summary = generateMaterialSummary(this.schemes)
+    const summary = generateMaterialSummary(this.schemes, this.executionOrders)
 
     return `
       <div class="workbench-summary">
@@ -1632,9 +1932,20 @@ class App {
                 const isExecutable = readiness.isReadyForFinal
                 const excluded = summary.excludedSchemes.find(e => e.name === s.name)
                 const warningTitle = excluded ? excluded.reasons.join('; ') : ''
-                const statusHtml = isExecutable
-                  ? '<span class="mini-tag success">✅ 可执行</span>'
-                  : '<span class="mini-tag warning" title="' + warningTitle + '">⚠ 有警告</span>'
+                const execOrder = this.executionOrders.find(e => e.schemeId === s.id)
+                let statusHtml = ''
+                if (execOrder) {
+                  const statusColor = EXECUTION_STATUS_COLOR_MAP[execOrder.status]
+                  statusHtml = `<span class="mini-tag" style="background:${statusColor}15; color:${statusColor}">📋 ${execOrder.status}</span>`
+                  if (isExecutable && execOrder.status === '已完成') {
+                    statusHtml = `<span class="mini-tag success">✅ 可执行</span>`
+                  }
+                } else {
+                  statusHtml = '<span class="mini-tag info">未生成执行单</span>'
+                }
+                if (!isExecutable && statusHtml.includes('可执行')) {
+                  statusHtml = '<span class="mini-tag warning" title="' + warningTitle + '">⚠ 有警告</span>'
+                }
                 return `
                 <tr style="${!isExecutable ? 'background: #FFFAF0; opacity: 0.9' : ''}">
                   <td>${i + 1}</td>
@@ -1676,7 +1987,7 @@ class App {
   }
 
   private renderFinalizedModal(): string {
-    const summary = generateMaterialSummary(this.schemes)
+    const summary = generateMaterialSummary(this.schemes, this.executionOrders)
     const allFinalizedSchemes = summary.allFinalizedSchemes
 
     return `
@@ -1824,6 +2135,485 @@ class App {
             ` : ''}
           </div>
         </div>
+      </div>
+    `
+  }
+
+  private renderExecutionView(): string {
+    const filtered = this.getFilteredExecutionOrders()
+    const filteredIds = new Set(filtered.map(e => e.id))
+
+    if (this.selectedExecutionId !== null) {
+      if (!filteredIds.has(this.selectedExecutionId) && filtered.length > 0) {
+        this.selectedExecutionId = filtered[0].id
+      } else if (!filteredIds.has(this.selectedExecutionId)) {
+        this.selectedExecutionId = null
+      }
+    } else if (filtered.length > 0) {
+      this.selectedExecutionId = filtered[0].id
+    }
+
+    const selectedExecution = this.getSelectedExecution()
+
+    const pendingCount = this.executionOrders.filter(e => e.status === '待执行').length
+    const inProgressCount = this.executionOrders.filter(e => e.status === '执行中').length
+    const completedCount = this.executionOrders.filter(e => e.status === '已完成').length
+    const reworkCount = this.executionOrders.filter(e => e.status === '需返工').length
+
+    const quadrants: { key: 'all' | ExecutionStatus; label: string; icon: string; count: number; color: string }[] = [
+      { key: 'all', label: '全部', icon: '📋', count: this.executionOrders.length, color: '#6C757D' },
+      { key: '待执行', label: '待执行', icon: '⏳', count: pendingCount, color: EXECUTION_STATUS_COLOR_MAP['待执行'] },
+      { key: '执行中', label: '执行中', icon: '🔄', count: inProgressCount, color: EXECUTION_STATUS_COLOR_MAP['执行中'] },
+      { key: '已完成', label: '已完成', icon: '✅', count: completedCount, color: EXECUTION_STATUS_COLOR_MAP['已完成'] },
+      { key: '需返工', label: '需返工', icon: '⚠️', count: reworkCount, color: EXECUTION_STATUS_COLOR_MAP['需返工'] }
+    ]
+
+    return `
+      <div class="main-content execution-main">
+        <aside class="sidebar execution-sidebar">
+          <div class="filter-section">
+            <div class="filter-title">🔧 试配执行单筛选</div>
+
+            <div class="execution-quadrants">
+              ${quadrants.map(q => `
+                <button class="execution-quadrant-btn ${this.executionQuadrant === q.key ? 'active' : ''}"
+                        data-exec-quadrant="${q.key}"
+                        style="--quadrant-color: ${q.color}">
+                  <span class="exec-quad-icon">${q.icon}</span>
+                  <span class="exec-quad-label">${q.label}</span>
+                  <span class="exec-quad-count">${q.count}</span>
+                </button>
+              `).join('')}
+            </div>
+
+            <div style="height:1px; background:var(--border); margin:12px 0"></div>
+
+            <div class="filter-row">
+              <label>盒型</label>
+              <select id="exec-filter-boxType">
+                <option value="">全部盒型</option>
+                ${BOX_TYPES.map(bt => `<option value="${bt}" ${this.executionFilters.boxType === bt ? 'selected' : ''}>${bt}</option>`).join('')}
+              </select>
+            </div>
+
+            <div class="filter-row">
+              <label>风险等级</label>
+              <select id="exec-filter-riskLevel">
+                <option value="">全部等级</option>
+                ${RISK_LEVELS.map(r => `<option value="${r}" ${this.executionFilters.riskLevel === r ? 'selected' : ''}>${r}风险</option>`).join('')}
+              </select>
+            </div>
+
+            <div class="filter-row">
+              <label>执行人</label>
+              <input type="text" id="exec-filter-executor" placeholder="输入执行人姓名" value="${this.escapeHtml(this.executionFilters.executor)}">
+            </div>
+          </div>
+
+          <div class="list-header">
+            <div class="list-title">执行单列表</div>
+            <div class="list-count">${filtered.length} 项</div>
+          </div>
+
+          <div class="list-container" id="execution-list">
+            ${filtered.length === 0 ? `
+              <div class="empty-state">
+                <div class="empty-state-icon">📋</div>
+                <div>暂无执行单</div>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:4px">从方案列表中一键生成执行单</div>
+              </div>
+            ` : filtered.map(order => this.renderExecutionCard(order)).join('')}
+          </div>
+        </aside>
+
+        <main class="detail-panel execution-detail-panel">
+          ${selectedExecution ? this.renderExecutionDetail(selectedExecution) : `
+            <div class="empty-state">
+              <div class="empty-state-icon">🔧</div>
+              <div>请选择一个试配执行单查看详情</div>
+              <div style="font-size:12px; color:var(--text-muted); margin-top:4px">或从方案评审列表中生成新的执行单</div>
+            </div>
+          `}
+        </main>
+      </div>
+    `
+  }
+
+  private renderExecutionCard(order: ExecutionOrder): string {
+    const isSelected = this.selectedExecutionId === order.id
+    const hasMissingInfo = order.missingInfo.length > 0
+    const hasAdjustReasons = order.adjustmentReasons.length > 0
+    const recentProgress = order.adjustmentProgress.length > 0 ? order.adjustmentProgress[order.adjustmentProgress.length - 1] : null
+
+    return `
+      <div class="execution-item ${isSelected ? 'selected' : ''} ${order.status === '执行中' ? 'status-in-progress' : ''}"
+           data-exec-id="${order.id}">
+        <div class="execution-item-header">
+          <div class="execution-item-name">
+            <span>${this.escapeHtml(order.schemeName)}</span>
+          </div>
+          <span class="scheme-status" style="background:${EXECUTION_STATUS_COLOR_MAP[order.status]}">${order.status}</span>
+        </div>
+
+        <div class="execution-item-meta">
+          <span>📦 ${order.boxType}</span>
+          <span class="scheme-colors">
+            <span class="color-swatch color-swatch-sm" style="background:${order.mainColor.hex}" title="${order.mainColor.name}"></span>
+            <span style="color:var(--text-muted)">+</span>
+            <span class="color-swatch color-swatch-sm" style="background:${order.secondaryColor.hex}" title="${order.secondaryColor.name}"></span>
+          </span>
+          <span class="wb-risk-badge" style="background:${RISK_COLOR_MAP[order.riskLevel]}22; color:${RISK_COLOR_MAP[order.riskLevel]}">${order.riskLevel}风险</span>
+        </div>
+
+        <div class="execution-item-info">
+          <span>⏱ 预计 ${order.durationHours}h</span>
+          ${order.totalActualHours > 0 ? `<span style="color:${order.totalActualHours > order.durationHours ? '#C82506' : '#00A86B'}">实际 ${order.totalActualHours}h</span>` : ''}
+          ${order.currentExecutor ? `<span>👤 ${this.escapeHtml(order.currentExecutor)}</span>` : ''}
+        </div>
+
+        ${hasMissingInfo ? `
+          <div class="execution-missing-info">
+            <span>⚠ ${order.missingInfo.length} 项缺失信息</span>
+          </div>
+        ` : ''}
+
+        ${hasAdjustReasons ? `
+          <div class="execution-adjust-reason">
+            <span style="color:#C82506">调整原因：${this.escapeHtml(order.adjustmentReasons[order.adjustmentReasons.length - 1].content.substring(0, 30))}${order.adjustmentReasons[order.adjustmentReasons.length - 1].content.length > 30 ? '...' : ''}</span>
+          </div>
+        ` : ''}
+
+        ${recentProgress ? `
+          <div class="execution-recent-progress">
+            <span style="color:#FFB61E">📌 ${this.escapeHtml(recentProgress.operator)}：${this.escapeHtml(recentProgress.content.substring(0, 30))}${recentProgress.content.length > 30 ? '...' : ''}</span>
+          </div>
+        ` : ''}
+      </div>
+    `
+  }
+
+  private renderExecutionDetail(order: ExecutionOrder): string {
+    const canStart = order.status === '待执行' || order.status === '需返工'
+    const canRecordResult = order.status === '执行中'
+    const scheme = this.schemes.find(s => s.id === order.schemeId)
+
+    return `
+      <div class="execution-detail-body scroll-thin" style="flex:1; overflow-y:auto; padding:20px 24px">
+        ${this.renderExecutionHeader(order, scheme)}
+        ${this.renderExecutionReadiness(order)}
+        ${this.renderExecutionBasicInfo(order)}
+        ${this.renderExecutionActions(order, canStart, canRecordResult)}
+        ${this.renderExecutionTestRecords(order)}
+        ${this.renderExecutionAdjustmentPanel(order)}
+        ${this.renderExecutionSteps(order)}
+      </div>
+    `
+  }
+
+  private renderExecutionHeader(order: ExecutionOrder, scheme: PatternScheme | undefined): string {
+    return `
+      <div class="detail-section execution-header-section">
+        <div class="detail-header" style="padding:0; background:transparent; border:none; margin-bottom:12px">
+          <div class="detail-title">
+            <span style="font-size:20px">${this.escapeHtml(order.schemeName)}</span>
+            <span class="scheme-status" style="background:${EXECUTION_STATUS_COLOR_MAP[order.status]}; font-size:13px; padding:5px 14px">${order.status}</span>
+            <span class="wb-risk-badge" style="background:${RISK_COLOR_MAP[order.riskLevel]}22; color:${RISK_COLOR_MAP[order.riskLevel]}; font-size:12px; padding:4px 10px">${order.riskLevel}风险</span>
+          </div>
+          <div class="detail-actions">
+            ${scheme ? `<button class="btn btn-sm" id="exec-btn-view-scheme">查看方案</button>` : ''}
+            <button class="btn btn-sm" id="exec-btn-create-from-scheme" style="display:${scheme && (scheme.status === '待试配' || scheme.status === '需调整') ? 'inline-flex' : 'none'}">
+              从方案重新生成
+            </button>
+          </div>
+        </div>
+        <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:13px; color:var(--text-light)">
+          <span>📦 创建时间：${this.formatTimestamp(order.createdAt)}</span>
+          ${order.startedAt ? `<span>▶ 开始时间：${this.formatTimestamp(order.startedAt)}</span>` : ''}
+          ${order.completedAt ? `<span>✅ 完成时间：${this.formatTimestamp(order.completedAt)}</span>` : ''}
+          ${order.currentExecutor ? `<span>👤 当前执行人：${this.escapeHtml(order.currentExecutor)}</span>` : ''}
+          <span>⏱ 预计工时：<strong>${order.durationHours} 小时</strong></span>
+          ${order.totalActualHours > 0 ? `<span style="color:${order.totalActualHours > order.durationHours ? '#C82506' : '#00A86B'}">⌛ 累计实际：<strong>${order.totalActualHours} 小时</strong></span>` : ''}
+        </div>
+      </div>
+    `
+  }
+
+  private renderExecutionReadiness(order: ExecutionOrder): string {
+    const hasMissing = order.missingInfo.length > 0
+    const hasAdjust = order.adjustmentReasons.length > 0
+
+    if (!hasMissing && !hasAdjust) return ''
+
+    return `
+      <div class="detail-section execution-readiness-section" style="background:${hasMissing ? '#FFF5F5' : '#FFF9F0'}; border:1px solid ${hasMissing ? '#FFD6D6' : '#FFE4B8'}">
+        <div class="detail-section-title" style="color:${hasMissing ? '#C82506' : '#B8860B'}; border-bottom-color:${hasMissing ? '#FFD6D6' : '#FFE4B8'}">
+          <span>${hasMissing ? '⚠️ 可执行性检查' : '📋 调整原因'}</span>
+          <span style="font-size:12px; font-weight:normal">
+            ${hasMissing ? `${order.missingInfo.length} 项缺失信息` : `${order.adjustmentReasons.length} 项待处理原因`}
+          </span>
+        </div>
+
+        ${hasMissing ? `
+          <div style="margin-bottom:12px">
+            <div style="font-size:12px; color:var(--text-light); margin-bottom:6px">缺失信息提示：</div>
+            ${order.missingInfo.map(info => `
+              <div style="background:#fff; padding:8px 12px; border-radius:4px; font-size:13px; margin-bottom:6px; border-left:3px solid #C82506">
+                ${this.escapeHtml(info)}
+              </div>
+            `).join('')}
+            <div style="font-size:12px; color:#C82506; margin-top:8px">请先在「配色管理」中补全以上信息后再开始执行</div>
+          </div>
+        ` : ''}
+
+        ${hasAdjust ? `
+          <div>
+            <div style="font-size:12px; color:var(--text-light); margin-bottom:6px">调整原因：</div>
+            ${order.adjustmentReasons.map((reason, idx) => `
+              <div style="background:#fff; padding:8px 12px; border-radius:4px; font-size:13px; margin-bottom:6px; border-left:3px solid #FFB61E">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px">
+                  <span style="white-space:pre-wrap">${this.escapeHtml(reason.content)}</span>
+                  <span style="font-size:11px; color:var(--text-light); flex-shrink:0">${this.formatTimestamp(reason.createdAt)}</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+    `
+  }
+
+  private renderExecutionBasicInfo(order: ExecutionOrder): string {
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">📋 工艺参数</div>
+        <div class="detail-grid">
+          <div class="detail-field">
+            <label>盒型</label>
+            <div class="field-value">${order.boxType}</div>
+          </div>
+          <div class="detail-field">
+            <label>描线方式</label>
+            <div class="field-value">${order.lineMethod}</div>
+          </div>
+          <div class="detail-field">
+            <label>罩面次数</label>
+            <div class="field-value" style="color:${order.coatingCount === null ? '#C82506' : 'inherit'}">
+              ${order.coatingCount !== null ? `${order.coatingCount} 次` : '未填写'}
+            </div>
+          </div>
+          <div class="detail-field">
+            <label>适合人群</label>
+            <div class="field-value">${this.escapeHtml(order.targetAudience) || '未填写'}</div>
+          </div>
+          <div class="detail-field">
+            <label>主色</label>
+            <div class="color-selector">
+              <span class="color-swatch" style="background:${order.mainColor.hex}; width:24px; height:24px"></span>
+              <span>${order.mainColor.name} (${order.mainColor.hex})</span>
+            </div>
+          </div>
+          <div class="detail-field">
+            <label>辅色</label>
+            <div class="color-selector">
+              <span class="color-swatch" style="background:${order.secondaryColor.hex}; width:24px; height:24px"></span>
+              <span>${order.secondaryColor.name} (${order.secondaryColor.hex})</span>
+            </div>
+          </div>
+        </div>
+
+        ${order.colorDescription ? `
+          <div style="margin-top:16px">
+            <label style="font-size:12px; color:var(--text-light); display:block; margin-bottom:4px">配色说明</label>
+            <div class="wb-text-content">${this.escapeHtml(order.colorDescription)}</div>
+          </div>
+        ` : ''}
+
+        ${order.operationReminder ? `
+          <div style="margin-top:12px">
+            <label style="font-size:12px; color:var(--text-light); display:block; margin-bottom:4px">操作提醒</label>
+            <div class="wb-text-content" style="background:#FFF9F0; border-color:#FFE4B8; color:#B8860B">${this.escapeHtml(order.operationReminder)}</div>
+          </div>
+        ` : ''}
+      </div>
+    `
+  }
+
+  private renderExecutionActions(order: ExecutionOrder, canStart: boolean, canRecordResult: boolean): string {
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">
+          <span>⚡ 执行操作</span>
+          <span style="font-size:12px; color:var(--text-light); font-weight:normal">
+            ${order.status === '待执行' ? '待开始执行' : order.status === '执行中' ? '执行进行中' : order.status === '需返工' ? '待返工处理' : '已完成'}
+          </span>
+        </div>
+
+        ${canStart ? `
+          <div style="background:#F0F8FF; padding:16px; border-radius:6px; border:1px solid #B8D4E8">
+            <div style="font-size:14px; font-weight:500; margin-bottom:12px; color:#2A5C91">开始执行</div>
+            <div style="display:grid; grid-template-columns: 1fr auto; gap:10px; align-items:end">
+              <div>
+                <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">执行人姓名</label>
+                <input type="text" id="exec-start-executor" placeholder="请输入执行人姓名" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+              </div>
+              <button class="btn btn-primary" id="exec-btn-start">▶ 开始执行</button>
+            </div>
+          </div>
+        ` : ''}
+
+        ${canRecordResult ? `
+          <div style="background:#FFF9F0; padding:16px; border-radius:6px; border:1px solid #FFE4B8; margin-top:12px">
+            <div style="font-size:14px; font-weight:500; margin-bottom:12px; color:#B8860B">记录本次试配结果</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px">
+              <div>
+                <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">试配结果 <span style="color:var(--primary)">*</span></label>
+                <select id="exec-test-result" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+                  ${TEST_RESULTS.map(r => `<option value="${r}" style="color:${TEST_RESULT_COLOR_MAP[r]}">${r}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">执行人 <span style="color:var(--primary)">*</span></label>
+                <input type="text" id="exec-test-executor" placeholder="请输入执行人姓名" value="${this.escapeHtml(order.currentExecutor || '')}" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns: 1fr; gap:10px; margin-bottom:10px">
+              <div>
+                <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">实际耗时（小时）</label>
+                <input type="number" id="exec-test-hours" placeholder="如：4.5" step="0.5" min="0" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">问题备注</label>
+              <textarea id="exec-test-issues" rows="2" placeholder="记录本次试配过程中遇到的问题..." style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:4px; font-size:13px; resize:vertical; font-family:inherit"></textarea>
+            </div>
+            <div style="margin-bottom:12px">
+              <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">后续处理建议 <span style="color:#B8860B">（结果为"需调整"时必填）</span></label>
+              <textarea id="exec-test-suggestions" rows="2" placeholder="填写后续改进或处理的建议..." style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:4px; font-size:13px; resize:vertical; font-family:inherit"></textarea>
+            </div>
+            <button class="btn btn-primary" id="exec-btn-submit-test" style="width:100%">📝 提交试配结果</button>
+          </div>
+        ` : ''}
+
+        ${order.status === '已完成' ? `
+          <div style="background:#F0FFF7; padding:16px; border-radius:6px; border:1px solid #B8E6C8; text-align:center">
+            <div style="font-size:32px; margin-bottom:8px">✅</div>
+            <div style="font-size:15px; font-weight:600; color:#00A86B; margin-bottom:4px">试配已完成</div>
+            <div style="font-size:12px; color:var(--text-light)">方案已通过试配验证，可进入评审/定稿流程</div>
+          </div>
+        ` : ''}
+      </div>
+    `
+  }
+
+  private renderExecutionTestRecords(order: ExecutionOrder): string {
+    const records = [...order.testRecords].sort((a, b) => b.timestamp - a.timestamp)
+
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">
+          <span>📊 试配记录</span>
+          <span style="font-size:12px; color:var(--text-light); font-weight:normal">共 ${records.length} 次</span>
+        </div>
+
+        ${records.length === 0 ? `
+          <div style="padding:20px; text-align:center; color:var(--text-muted); font-size:13px; background:var(--bg); border-radius:6px">
+            暂无试配记录
+          </div>
+        ` : records.map(record => `
+          <div style="padding:12px 0; border-bottom:1px dashed var(--border); ${records.indexOf(record) === records.length - 1 ? 'border-bottom:none' : ''}">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap">
+              <span class="review-conclusion-badge ${record.result === '通过' ? 'pass' : record.result === '需调整' ? 'adjust' : 'pending'}" style="border:none; padding:4px 12px; background:${TEST_RESULT_COLOR_MAP[record.result]}15; color:${TEST_RESULT_COLOR_MAP[record.result]}">
+                ${record.result}
+              </span>
+              <span style="font-weight:500; font-size:13px">${this.escapeHtml(record.executor)}</span>
+              <span style="color:var(--text-light); font-size:12px">${this.formatTimestamp(record.timestamp)}</span>
+              ${record.actualHours !== null ? `<span style="font-size:12px; color:var(--text-muted)">⏱ ${record.actualHours} 小时</span>` : ''}
+            </div>
+            ${record.issues ? `
+              <div style="font-size:13px; margin-bottom:6px">
+                <span style="color:var(--text-light)">问题备注：</span>
+                <span style="white-space:pre-wrap">${this.escapeHtml(record.issues)}</span>
+              </div>
+            ` : ''}
+            ${record.suggestions ? `
+              <div style="font-size:13px; background:var(--bg); padding:8px 12px; border-radius:4px; border-left:3px solid #FFB61E">
+                <span style="color:#B8860B; font-weight:500">处理建议：</span>
+                <span style="white-space:pre-wrap">${this.escapeHtml(record.suggestions)}</span>
+              </div>
+            ` : ''}
+            <div style="font-size:11px; color:var(--text-muted); margin-top:6px">
+              状态变化：${record.statusBefore} → ${record.statusAfter}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `
+  }
+
+  private renderExecutionAdjustmentPanel(order: ExecutionOrder): string {
+    const progressList = [...order.adjustmentProgress].sort((a, b) => b.timestamp - a.timestamp)
+    const showProgressForm = order.status === '执行中' || order.status === '需返工'
+
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">
+          <span>📌 处理进展</span>
+          <span style="font-size:12px; color:var(--text-light); font-weight:normal">共 ${progressList.length} 条记录</span>
+        </div>
+
+        ${progressList.length > 0 ? `
+          <div style="margin-bottom:${showProgressForm ? '16px' : '0'}">
+            ${progressList.map(p => `
+              <div style="background:var(--bg); padding:10px 14px; border-radius:4px; font-size:13px; margin-bottom:6px; border-left:3px solid #FFB61E">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px">
+                  <span style="font-weight:500">${this.escapeHtml(p.operator)}</span>
+                  <span style="font-size:11px; color:var(--text-light)">${this.formatTimestamp(p.timestamp)}</span>
+                </div>
+                <div style="color:var(--text-secondary); white-space:pre-wrap">${this.escapeHtml(p.content)}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        ${showProgressForm ? `
+          <div style="background:var(--bg); padding:14px; border-radius:6px">
+            <div style="font-size:13px; font-weight:500; margin-bottom:10px">添加处理进展</div>
+            <div style="display:grid; grid-template-columns: 1fr; gap:10px; margin-bottom:10px">
+              <div>
+                <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">处理人 <span style="color:var(--primary)">*</span></label>
+                <input type="text" id="exec-progress-operator" placeholder="请输入处理人姓名" style="width:100%; padding:7px 10px; border:1px solid var(--border); border-radius:4px; font-size:13px">
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <label style="font-size:12px; color:var(--text-light); margin-bottom:4px; display:block">进展说明 <span style="color:var(--primary)">*</span></label>
+              <textarea id="exec-progress-content" rows="2" placeholder="请描述当前处理进展..." style="width:100%; padding:7px 10px; border:1px solid var(--border); border-radius:4px; font-size:13px; resize:vertical; font-family:inherit"></textarea>
+            </div>
+            <button class="btn btn-sm" id="exec-btn-add-progress" style="background:#FFB61E; color:#fff; border-color:#FFB61E; width:100%">+ 添加处理进展</button>
+          </div>
+        ` : ''}
+      </div>
+    `
+  }
+
+  private renderExecutionSteps(order: ExecutionOrder): string {
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">
+          <span>📝 工艺步骤</span>
+          <span style="font-size:12px; color:var(--text-light); font-weight:normal">共 ${order.stepNotes.length} 步</span>
+        </div>
+
+        <ul class="wb-steps-list">
+          ${order.stepNotes.map((step, idx) => `
+            <li class="wb-step-item" style="${idx === order.stepNotes.length - 1 ? 'border-bottom:none' : ''}">
+              <div class="wb-step-number">${step.step}</div>
+              <div class="wb-step-content">
+                <div class="wb-step-title">${this.escapeHtml(step.title)}</div>
+                ${step.note ? `<div class="wb-step-note">${this.escapeHtml(step.note)}</div>` : ''}
+              </div>
+            </li>
+          `).join('')}
+        </ul>
       </div>
     `
   }
@@ -2489,8 +3279,125 @@ class App {
           this.render()
         })
       })
+
+      if (this.workbenchTab === 'list' && this.workbenchSelectedId) {
+        document.getElementById('wb-btn-create-execution')?.addEventListener('click', () => {
+          const result = this.createExecutionOrderFromScheme(this.workbenchSelectedId!)
+          if (result) {
+            this.selectedExecutionId = result.id
+            this.workbenchTab = 'execution'
+            this.saveExecution()
+            this.render()
+          }
+        })
+      }
     }
-  }
+
+    if (this.workbenchTab === 'execution') {
+        document.querySelectorAll('[data-exec-quadrant]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const key = btn.getAttribute('data-exec-quadrant') as 'all' | ExecutionStatus
+            this.executionQuadrant = key
+            this.render()
+          })
+        })
+
+        document.getElementById('exec-filter-boxType')?.addEventListener('change', (e) => {
+          this.executionFilters.boxType = (e.target as HTMLSelectElement).value
+          this.render()
+        })
+        document.getElementById('exec-filter-riskLevel')?.addEventListener('change', (e) => {
+          this.executionFilters.riskLevel = (e.target as HTMLSelectElement).value as RiskLevel | ''
+          this.render()
+        })
+        document.getElementById('exec-filter-executor')?.addEventListener('input', (e) => {
+          this.executionFilters.executor = (e.target as HTMLInputElement).value.trim()
+          this.render()
+        })
+
+        document.querySelectorAll('[data-exec-id]').forEach(item => {
+          item.addEventListener('click', () => {
+            const id = item.getAttribute('data-exec-id')!
+            this.selectedExecutionId = id
+            this.render()
+          })
+        })
+
+        const selectedExec = this.getSelectedExecution()
+        if (selectedExec) {
+          document.getElementById('exec-btn-view-scheme')?.addEventListener('click', () => {
+            this.workbenchSelectedId = selectedExec.schemeId
+            this.workbenchTab = 'list'
+            this.render()
+          })
+
+          document.getElementById('exec-btn-create-from-scheme')?.addEventListener('click', () => {
+            const result = this.createExecutionOrderFromScheme(selectedExec.schemeId)
+            if (result) {
+              this.selectedExecutionId = result.id
+              this.saveExecution()
+              this.render()
+            }
+          })
+
+          document.getElementById('exec-btn-start')?.addEventListener('click', () => {
+            const executor = (document.getElementById('exec-start-executor') as HTMLInputElement)?.value?.trim()
+            if (!executor) {
+              alert('请输入执行人姓名')
+              return
+            }
+            if (this.startExecution(selectedExec.id, executor)) {
+              this.saveExecution()
+              this.render()
+            }
+          })
+
+          document.getElementById('exec-btn-submit-test')?.addEventListener('click', () => {
+            const result = (document.getElementById('exec-test-result') as HTMLSelectElement)?.value as TestResult
+            const executor = (document.getElementById('exec-test-executor') as HTMLInputElement)?.value?.trim()
+            const hoursVal = (document.getElementById('exec-test-hours') as HTMLInputElement)?.value
+            const issues = (document.getElementById('exec-test-issues') as HTMLTextAreaElement)?.value?.trim() || ''
+            const suggestions = (document.getElementById('exec-test-suggestions') as HTMLTextAreaElement)?.value?.trim() || ''
+
+            if (!executor) {
+              alert('请输入执行人姓名')
+              return
+            }
+            if (result === '需调整' && !suggestions) {
+              alert('结果为「需调整」时，必须填写后续处理建议')
+              return
+            }
+
+            const actualHours = hoursVal === '' ? null : parseFloat(hoursVal)
+            if (this.recordTestResult(selectedExec.id, result, executor, actualHours, issues, suggestions)) {
+              this.saveExecution()
+              this.save()
+              this.render()
+            }
+          })
+
+          document.getElementById('exec-btn-add-progress')?.addEventListener('click', () => {
+            const operator = (document.getElementById('exec-progress-operator') as HTMLInputElement)?.value?.trim()
+            const content = (document.getElementById('exec-progress-content') as HTMLTextAreaElement)?.value?.trim()
+
+            if (!operator) {
+              alert('请输入处理人姓名')
+              return
+            }
+            if (!content) {
+              alert('请输入进展说明')
+              return
+            }
+
+            if (this.addExecutionProgress(selectedExec.id, content, operator)) {
+              this.saveExecution()
+              this.save()
+              this.render()
+            }
+          })
+        }
+      }
+    }
 
   private escapeHtml(str: string): string {
     const div = document.createElement('div')
