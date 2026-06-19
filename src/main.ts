@@ -140,13 +140,29 @@ class App {
 
   private batchUpdateStatus(status: SchemeStatus): void {
     if (this.selectedIds.size === 0) return
-    if (!confirm(`确定将选中的 ${this.selectedIds.size} 个方案标记为「${status}」吗？`)) return
+    const filtered = this.getFilteredSchemes()
+    const filteredIds = new Set(filtered.map(s => s.id))
+    const toUpdate = Array.from(this.selectedIds).filter(id => filteredIds.has(id))
+    
+    if (toUpdate.length === 0) {
+      alert('当前筛选结果中没有选中的方案')
+      return
+    }
+    
+    if (!confirm(`确定将当前筛选结果中选中的 ${toUpdate.length} 个方案标记为「${status}」吗？`)) return
+    
+    const toUpdateSet = new Set(toUpdate)
     this.schemes = this.schemes.map(s => {
-      if (this.selectedIds.has(s.id)) {
+      if (toUpdateSet.has(s.id)) {
         return { ...s, status, updatedAt: Date.now() }
       }
       return s
     })
+    
+    this.selectedIds = new Set(
+      Array.from(this.selectedIds).filter(id => filteredIds.has(id))
+    )
+    
     this.save()
     this.render()
   }
@@ -164,6 +180,23 @@ class App {
 
   private render(): void {
     const filtered = this.getFilteredSchemes()
+    const filteredIds = new Set(filtered.map(s => s.id))
+    
+    if (this.selectedId !== null) {
+      const stillInFiltered = filteredIds.has(this.selectedId)
+      if (!stillInFiltered && filtered.length > 0) {
+        this.selectedId = filtered[0].id
+      } else if (!stillInFiltered) {
+        this.selectedId = null
+      }
+    } else if (filtered.length > 0) {
+      this.selectedId = filtered[0].id
+    }
+    
+    this.selectedIds = new Set(
+      Array.from(this.selectedIds).filter(id => filteredIds.has(id))
+    )
+    
     const allChecks = checkAllSchemes(this.schemes)
     const selectedScheme = this.getSelectedScheme()
     const selectedChecks = selectedScheme ? checkSingleScheme(selectedScheme) : []
@@ -472,7 +505,7 @@ class App {
 
   private renderFinalizedModal(): string {
     const summary = generateMaterialSummary(this.schemes)
-    const finalizedSchemes = this.schemes.filter(s => s.status === '已定稿')
+    const executableSchemes = summary.executableSchemes
 
     return `
       <div class="finalized-overlay" id="finalized-overlay">
@@ -572,7 +605,7 @@ class App {
                   </tr>
                 </thead>
                 <tbody>
-                  ${finalizedSchemes.length > 0 ? finalizedSchemes.map((s, i) => `
+                  ${executableSchemes.length > 0 ? executableSchemes.map((s, i) => `
                     <tr>
                       <td>${i + 1}</td>
                       <td><strong>${this.escapeHtml(s.name)}</strong></td>
@@ -586,12 +619,26 @@ class App {
                     </tr>
                   `).join('') : `
                     <tr>
-                      <td colspan="9" style="text-align:center; color:var(--text-muted); padding:20px">暂无已定稿方案</td>
+                      <td colspan="9" style="text-align:center; color:var(--text-muted); padding:20px">暂无可执行的已定稿方案</td>
                     </tr>
                   `}
                 </tbody>
               </table>
             </div>
+            
+            ${summary.excludedSchemes.length > 0 ? `
+              <div class="finalized-section" style="background: #FFF5F5; border: 1px solid #FFD6D6">
+                <div class="finalized-section-title" style="color: #C82506">⚠ 已排除的不可执行方案（${summary.excludedSchemes.length} 个）</div>
+                ${summary.excludedSchemes.map(item => `
+                  <div style="padding: 8px 0; border-bottom: 1px dashed #FFD6D6; font-size: 13px">
+                    <div style="font-weight: 500; margin-bottom: 4px">${this.escapeHtml(item.name)}</div>
+                    <div style="color: #C82506; font-size: 12px">
+                      ${item.reasons.map(r => `• ${this.escapeHtml(r)}`).join('<br>')}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
           </div>
         </div>
       </div>
@@ -609,8 +656,19 @@ class App {
       const file = target.files?.[0]
       if (file) {
         try {
-          const imported = await importFromJson(file)
-          if (confirm(`导入了 ${imported.length} 个方案，是否合并到当前数据？\n取消则替换现有数据。`)) {
+          const result = await importFromJson(file)
+          const { schemes: imported, issues } = result
+          
+          let message = `成功导入 ${imported.length} 个方案`
+          if (issues.length > 0) {
+            message += `\n\n以下问题已自动修正：\n• ${issues.slice(0, 10).join('\n• ')}`
+            if (issues.length > 10) {
+              message += `\n... 还有 ${issues.length - 10} 条修正记录`
+            }
+          }
+          
+          const action = confirm(`${message}\n\n是否合并到当前数据？\n取消则替换现有数据。`)
+          if (action) {
             this.schemes = [...this.schemes, ...imported]
           } else {
             this.schemes = imported
@@ -622,6 +680,8 @@ class App {
           this.render()
         } catch (err) {
           alert((err as Error).message)
+        } finally {
+          target.value = ''
         }
       }
     })

@@ -1,4 +1,5 @@
 import type { PatternScheme, MaterialSummary } from '../types'
+import { checkSingleScheme } from './checker'
 
 export function generateMaterialSummary(schemes: PatternScheme[]): {
   mainColors: MaterialSummary[]
@@ -7,8 +8,27 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
   totalSchemes: number
   totalHours: number
   boxTypeSummary: { type: string; count: number }[]
+  executableSchemes: PatternScheme[]
+  excludedSchemes: { name: string; reasons: string[] }[]
 } {
-  const finalizedSchemes = schemes.filter(s => s.status === '已定稿')
+  const finalizedSchemes = schemes.filter(s => {
+    if (s.status !== '已定稿') return false
+    const checks = checkSingleScheme(s)
+    const hasErrors = checks.some(c => c.type === 'error')
+    return !hasErrors
+  })
+
+  const excludedSchemes = schemes
+    .filter(s => s.status === '已定稿')
+    .map(s => ({
+      scheme: s,
+      checks: checkSingleScheme(s).filter(c => c.type === 'error')
+    }))
+    .filter(item => item.checks.length > 0)
+    .map(item => ({
+      name: item.scheme.name,
+      reasons: item.checks.map(c => c.message)
+    }))
 
   const mainColorMap = new Map<string, { count: number; boxTypes: Set<string> }>()
   const secondaryColorMap = new Map<string, { count: number; boxTypes: Set<string> }>()
@@ -63,6 +83,8 @@ export function generateMaterialSummary(schemes: PatternScheme[]): {
     lineMethods,
     totalSchemes: finalizedSchemes.length,
     totalHours,
-    boxTypeSummary
+    boxTypeSummary,
+    executableSchemes: finalizedSchemes,
+    excludedSchemes
   }
 }
