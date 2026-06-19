@@ -4,6 +4,10 @@ export type RiskLevel = '低' | '中' | '高'
 
 export type LineMethod = '描金' | '描银' | '黑漆描线' | '色漆描线' | '无描线'
 
+export type WorkbenchView = 'all' | 'priority'
+
+export type WorkbenchTab = 'list' | 'summary'
+
 export interface ColorInfo {
   name: string
   hex: string
@@ -53,4 +57,14 @@ export interface MaterialSummary {
   color: string
   count: number
   boxTypes: string[]
+}
+
+export interface SchemeReadiness {
+  isReadyForFinal: boolean
+  blockingReasons: string[]
+  hasMissingInfo: boolean
+  hasDurationOverflow: boolean
+  hasColorConflict: boolean
+  hasInsufficientAdjustment: boolean
+  priorityScore: number
 }

@@ -1,4 +1,4 @@
-import type { PatternScheme, CheckResult } from '../types'
+import type { PatternScheme, CheckResult, SchemeReadiness } from '../types'
 import { MAX_SCHEMES_PER_BOX, MAX_ACTIVITY_DURATION } from '../constants'
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -106,4 +106,75 @@ export function getSchemeCheckCount(results: CheckResult[]): { errors: number; w
     warnings: results.filter(r => r.type === 'warning').length,
     infos: results.filter(r => r.type === 'info').length
   }
+}
+
+export function getSchemeReadiness(scheme: PatternScheme): SchemeReadiness {
+  const checks = checkSingleScheme(scheme)
+  const errors = checks.filter(c => c.type === 'error')
+  const warnings = checks.filter(c => c.type === 'warning')
+  const infos = checks.filter(c => c.type === 'info')
+
+  const blockingReasons = errors.map(e => e.message)
+
+  const hasMissingInfo =
+    scheme.coatingCount === null ||
+    scheme.targetAudience.trim() === '' ||
+    scheme.operationReminder.trim() === '' ||
+    scheme.colorDescription.trim() === '' ||
+    scheme.stepNotes.some(s => s.title.trim() === '' || s.note.trim() === '')
+
+  const hasDurationOverflow = scheme.durationHours > MAX_ACTIVITY_DURATION
+
+  const hasColorConflict = isColorConflict(scheme.mainColor.hex, scheme.secondaryColor.hex)
+
+  const hasInsufficientAdjustment =
+    scheme.status === '需调整' &&
+    !scheme.colorDescription.includes('调整') &&
+    !scheme.stepNotes.some(s => s.note.includes('调整'))
+
+  let priorityScore = 0
+  if (errors.length > 0) priorityScore += errors.length * 100
+  if (warnings.length > 0) priorityScore += warnings.length * 10
+  if (infos.length > 0) priorityScore += infos.length * 1
+  if (scheme.status === '需调整') priorityScore += 50
+  if (scheme.status === '待试配') priorityScore += 20
+
+  const isReadyForFinal =
+    blockingReasons.length === 0 &&
+    !hasMissingInfo &&
+    !hasDurationOverflow &&
+    scheme.status !== '需调整' &&
+    scheme.status !== '仅展示'
+
+  return {
+    isReadyForFinal,
+    blockingReasons,
+    hasMissingInfo,
+    hasDurationOverflow,
+    hasColorConflict,
+    hasInsufficientAdjustment,
+    priorityScore
+  }
+}
+
+export function isPriorityScheme(scheme: PatternScheme): boolean {
+  const readiness = getSchemeReadiness(scheme)
+  return (
+    readiness.hasMissingInfo ||
+    readiness.hasDurationOverflow ||
+    readiness.hasColorConflict ||
+    readiness.hasInsufficientAdjustment ||
+    readiness.blockingReasons.length > 0
+  )
+}
+
+export function sortSchemesByPriority(schemes: PatternScheme[]): PatternScheme[] {
+  return [...schemes].sort((a, b) => {
+    const ra = getSchemeReadiness(a)
+    const rb = getSchemeReadiness(b)
+    if (rb.priorityScore !== ra.priorityScore) {
+      return rb.priorityScore - ra.priorityScore
+    }
+    return b.updatedAt - a.updatedAt
+  })
 }
